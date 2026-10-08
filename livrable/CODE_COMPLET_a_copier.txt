@@ -1,0 +1,1653 @@
+Option Explicit
+' Frontiere efficiente - code complet (les 8 modules reunis en un seul)
+
+'==============================================================================
+' Module d'origine : modConfig
+'==============================================================================
+' modConfig : constantes du classeur, lecture et controle des parametres
+'==============================================================================
+
+' --- Noms des feuilles ---
+Public Const FEUILLE_PARAMETRES As String = "Parametres"
+Public Const FEUILLE_COURS As String = "Cours"
+Public Const FEUILLE_RENDEMENTS As String = "Rendements"
+Public Const FEUILLE_STATS As String = "Statistiques"
+Public Const FEUILLE_DEUX_TITRES As String = "Deux titres"
+Public Const FEUILLE_FRONTIERE As String = "Frontiere"
+Public Const FEUILLE_ALEATOIRES As String = "Aleatoires"
+Public Const FEUILLE_CALCULATEUR As String = "Calculateur"
+
+' --- Cellules de la feuille Parametres ---
+Public Const CELLULE_DOSSIER As String = "C4"
+Public Const CELLULE_NB_POINTS As String = "C5"
+Public Const CELLULE_NB_ALEATOIRES As String = "C6"
+Public Const CELLULE_PAS_GRILLE As String = "C7"
+Public Const CELLULE_TITRE_A As String = "C8"
+Public Const CELLULE_TITRE_B As String = "C9"
+
+' Tableau des actions : colonne B = "Oui"/"Non", C = code (nom du fichier), D = nom
+Public Const LIGNE_PREMIER_TITRE As Long = 13
+Public Const COL_UTILISER As Long = 2
+Public Const COL_CODE As Long = 3
+Public Const COL_NOM As Long = 4
+Public Const NB_MAX_TITRES As Long = 30
+
+' Nombre de jours de bourse par an (pour les valeurs annualisees)
+Public Const JOURS_PAR_AN As Long = 252
+
+' Numero d'erreur reserve aux erreurs "utilisateur" (message clair, pas un bug)
+Public Const ERR_UTILISATEUR As Long = -2147220504   ' = vbObjectError + 1000
+
+' Ensemble des parametres saisis par l'utilisateur
+Public Type TParametres
+    Dossier As String              ' dossier contenant les fichiers CSV
+    NbPointsFrontiere As Long      ' nombre de points sur la partie efficiente
+    NbAleatoires As Long           ' nombre de portefeuilles aleatoires (0 = aucun)
+    PasGrille As Double            ' pas de la grille du tableau a deux titres
+    IndiceTitreA As Long           ' indices (dans Codes) des deux titres du tableau a 2 titres
+    IndiceTitreB As Long
+    NbTitres As Long
+    Codes() As String              ' codes des actions retenues (1 To NbTitres)
+    Noms() As String               ' noms des entreprises (1 To NbTitres)
+End Type
+
+'==============================================================================
+' Module d'origine : modMain
+'==============================================================================
+' modMain : macros lancees par les boutons de la feuille Parametres
+'
+'   LancerAnalyse    : lit les fichiers CSV, calcule tout et cree les feuilles
+'   EffacerResultats : supprime les feuilles de resultats
+'   CreerBoutons     : (a lancer une fois) ajoute les boutons sur Parametres
+'==============================================================================
+
+'==============================================================================
+' Module d'origine : modImport
+'==============================================================================
+' modImport : lecture des fichiers CSV de cours et alignement des dates
+'
+' Formats acceptes (un fichier par action, nomme CODE.csv) :
+'   - Date,Close,AdjClose,Dividend   (fichiers fournis, issus de Yahoo Finance)
+'   - Date,Open,High,Low,Close,Adj Close,Volume   (export Yahoo Finance)
+'   - Date;Close   (export Google Sheets en francais, virgule decimale)
+' Les dates peuvent etre AAAA-MM-JJ ou JJ/MM/AAAA, en ordre croissant ou decroissant.
+'==============================================================================
+
+'==============================================================================
+' Module d'origine : modStats
+'==============================================================================
+' modStats : rendements, moyennes, variances, covariances, correlations
+' Conventions du cours "Utiliser la theorie du portefeuille" :
+'   R_t = (D_t + P_t - P_(t-1)) / P_(t-1)
+'   moyenne arithmetique ; variance et covariance divisees par n (et non n - 1)
+'==============================================================================
+
+'==============================================================================
+' Module d'origine : modPortefeuille
+'==============================================================================
+' modPortefeuille : rendement et risque d'un portefeuille selon les poids
+'   R_P      = somme_i  x_i * E(R_i)
+'   Var(R_P) = somme_i somme_j  x_i * x_j * Cov(R_i, R_j)
+' (avec deux titres : xA^2 Var(A) + xB^2 Var(B) + 2 xA xB Cov(A,B))
+'==============================================================================
+
+'==============================================================================
+' Module d'origine : modOptimisation
+'==============================================================================
+' modOptimisation : portefeuille de variance minimale et frontiere efficiente
+'
+' Contraintes : poids entre 0 et 100 %, somme des poids = 100 % (pas de vente
+' a decouvert). Le Solveur d'Excel n'est pas utilise (peu fiable sur Mac).
+'
+' Methode : pour un "gout pour le rendement" lambda donne, on minimise
+'     Var(R_P) - lambda * E(R_P)
+' par descente de gradient projetee. lambda = 0 donne le portefeuille de
+' variance minimale ; plus lambda est grand, plus le portefeuille est rentable
+' (et risque). Pour un rendement cible, on cherche le lambda qui l'atteint par
+' dichotomie : on obtient le portefeuille de risque minimal pour ce rendement.
+'==============================================================================
+
+Private Const TOLERANCE_POIDS As Double = 0.000000000001    ' 1E-12 : arret de la descente
+Private Const MAX_ITERATIONS As Long = 100000
+Private Const MAX_DICHOTOMIE As Long = 100
+
+'==============================================================================
+' Module d'origine : modSorties
+'==============================================================================
+' modSorties : ecriture des resultats dans les feuilles du classeur
+'==============================================================================
+
+' Position des blocs de la feuille Statistiques (reutilisee par le calculateur)
+Public Const STAT_LIGNE_ENTETE As Long = 3
+Public Const STAT_LIGNE_MOYENNE As Long = 4
+Public Const STAT_LIGNE_VARIANCE As Long = 5
+Public Const STAT_LIGNE_ECART_TYPE As Long = 6
+Public Const STAT_LIGNE_COV As Long = 13       ' premiere ligne de la matrice de covariance
+
+Private Const COULEUR_ENTETE As Long = 6299648  ' RGB(0, 32, 96) : bleu fonce
+Private Const COULEUR_SAISIE As Long = 10086143 ' RGB(255, 230, 153) : jaune clair
+
+'==============================================================================
+' Module d'origine : modGraphiques
+'==============================================================================
+' modGraphiques : graphiques risque / rendement
+' Si un graphique ne peut pas etre cree, les calculs ne sont pas perdus :
+' un avertissement est affiche a la fin de l'analyse.
+'==============================================================================
+
+Public AvertissementGraphique As String
+
+'##############################################################################
+' modConfig
+'##############################################################################
+' Declenche une erreur "utilisateur" : le message sera affiche tel quel.
+Public Sub ErreurUtilisateur(ByVal message As String)
+    Err.Raise ERR_UTILISATEUR, "Frontiere efficiente", message
+End Sub
+
+' Renvoie la feuille demandee, ou Nothing si elle n'existe pas.
+Public Function FeuilleExistante(ByVal nom As String) As Worksheet
+    On Error Resume Next
+    Set FeuilleExistante = ThisWorkbook.Worksheets(nom)
+    On Error GoTo 0
+End Function
+
+' Lit la feuille Parametres et verifie chaque saisie.
+Public Function LireParametres() As TParametres
+    Dim p As TParametres
+    Dim ws As Worksheet
+    Dim i As Long, j As Long, ligne As Long
+    Dim utiliser As String, code As String, nom As String
+    Dim codes() As String, noms() As String
+
+    Set ws = FeuilleExistante(FEUILLE_PARAMETRES)
+    If ws Is Nothing Then
+        ErreurUtilisateur "La feuille '" & FEUILLE_PARAMETRES & "' est introuvable." & vbLf & _
+                          "Ne la renommez pas et ne la supprimez pas."
+    End If
+
+    ' Dossier des fichiers : par defaut, celui du classeur
+    p.Dossier = Trim$(CStr(ws.Range(CELLULE_DOSSIER).Value))
+    If p.Dossier = "" Then
+        If ThisWorkbook.Path = "" Then
+            ErreurUtilisateur "Enregistrez d'abord le classeur (format .xlsm) dans le dossier " & _
+                              "qui contient les fichiers CSV, puis relancez la macro."
+        End If
+        p.Dossier = ThisWorkbook.Path
+    End If
+
+    p.NbPointsFrontiere = LireEntier(ws.Range(CELLULE_NB_POINTS), "Nombre de points de la frontiere", 3, 200)
+    p.NbAleatoires = LireEntier(ws.Range(CELLULE_NB_ALEATOIRES), "Nombre de portefeuilles aleatoires", 0, 20000)
+    p.PasGrille = LirePas(ws.Range(CELLULE_PAS_GRILLE))
+
+    ' Tableau des actions
+    ReDim codes(1 To NB_MAX_TITRES)
+    ReDim noms(1 To NB_MAX_TITRES)
+    For i = 0 To NB_MAX_TITRES - 1
+        ligne = LIGNE_PREMIER_TITRE + i
+        utiliser = UCase$(Trim$(CStr(ws.Cells(ligne, COL_UTILISER).Value)))
+        code = Trim$(CStr(ws.Cells(ligne, COL_CODE).Value))
+        nom = Trim$(CStr(ws.Cells(ligne, COL_NOM).Value))
+        If code <> "" And (utiliser = "OUI" Or utiliser = "O" Or utiliser = "X") Then
+            For j = 1 To p.NbTitres
+                If UCase$(codes(j)) = UCase$(code) Then
+                    ErreurUtilisateur "L'action '" & code & "' est selectionnee deux fois " & _
+                                      "dans la feuille Parametres (ligne " & ligne & ")."
+                End If
+            Next j
+            p.NbTitres = p.NbTitres + 1
+            codes(p.NbTitres) = code
+            If nom = "" Then nom = code
+            noms(p.NbTitres) = nom
+        End If
+    Next i
+
+    If p.NbTitres < 2 Then
+        ErreurUtilisateur "Selectionnez au moins 2 actions : ecrivez 'Oui' dans la colonne " & _
+                          "'Utiliser ?' de la feuille Parametres, en face de chaque code."
+    End If
+    ReDim Preserve codes(1 To p.NbTitres)
+    ReDim Preserve noms(1 To p.NbTitres)
+    p.Codes = codes
+    p.Noms = noms
+
+    ' Les deux titres du tableau "Deux titres" (par defaut : les deux premiers)
+    p.IndiceTitreA = IndiceDuTitre(p, CStr(ws.Range(CELLULE_TITRE_A).Value), 1)
+    p.IndiceTitreB = IndiceDuTitre(p, CStr(ws.Range(CELLULE_TITRE_B).Value), 2)
+    If p.IndiceTitreA = p.IndiceTitreB Then
+        ErreurUtilisateur "Le titre A et le titre B du tableau a deux titres doivent etre differents."
+    End If
+
+    LireParametres = p
+End Function
+
+' Lit un nombre entier compris entre mini et maxi.
+Private Function LireEntier(ByVal cellule As Range, ByVal libelle As String, _
+                            ByVal mini As Long, ByVal maxi As Long) As Long
+    Dim v As Variant
+    v = cellule.Value
+    If IsEmpty(v) Or Not IsNumeric(v) Then
+        ErreurUtilisateur "Parametre '" & libelle & "' (cellule " & cellule.Address(False, False) & _
+                          ") : saisissez un nombre entier entre " & mini & " et " & maxi & "."
+    End If
+    If CDbl(v) <> Int(CDbl(v)) Or CDbl(v) < mini Or CDbl(v) > maxi Then
+        ErreurUtilisateur "Parametre '" & libelle & "' (cellule " & cellule.Address(False, False) & _
+                          ") : saisissez un nombre entier entre " & mini & " et " & maxi & "."
+    End If
+    LireEntier = CLng(v)
+End Function
+
+' Lit le pas de la grille (ex. 10 %) : il doit diviser 100 %.
+Private Function LirePas(ByVal cellule As Range) As Double
+    Dim v As Variant, nbPas As Long
+    v = cellule.Value
+    If IsEmpty(v) Or Not IsNumeric(v) Then
+        ErreurUtilisateur "Pas de la grille (cellule " & cellule.Address(False, False) & _
+                          ") : saisissez un pourcentage, par exemple 10 %."
+    End If
+    If CDbl(v) >= 1 Then v = CDbl(v) / 100      ' l'utilisateur a tape 10 au lieu de 10 %
+    If CDbl(v) < 0.01 Or CDbl(v) > 0.5 Then
+        ErreurUtilisateur "Pas de la grille (cellule " & cellule.Address(False, False) & _
+                          ") : choisissez une valeur entre 1 % et 50 %."
+    End If
+    nbPas = CLng(1 / CDbl(v))
+    If Abs(nbPas * CDbl(v) - 1) > 0.000001 Then
+        ErreurUtilisateur "Pas de la grille (cellule " & cellule.Address(False, False) & _
+                          ") : le pas doit diviser 100 % (par exemple 5 %, 10 %, 20 % ou 25 %)."
+    End If
+    LirePas = 1 / nbPas
+End Function
+
+' Renvoie la position d'un code parmi les actions retenues (ou la valeur par defaut si vide).
+Private Function IndiceDuTitre(ByRef p As TParametres, ByVal code As String, _
+                               ByVal indiceParDefaut As Long) As Long
+    Dim i As Long
+    code = Trim$(code)
+    If code = "" Then
+        IndiceDuTitre = indiceParDefaut
+        Exit Function
+    End If
+    For i = 1 To p.NbTitres
+        If UCase$(p.Codes(i)) = UCase$(code) Then
+            IndiceDuTitre = i
+            Exit Function
+        End If
+    Next i
+    ErreurUtilisateur "Le titre '" & code & "' choisi pour le tableau a deux titres ne fait pas " & _
+                      "partie des actions selectionnees (colonne 'Utiliser ?' = Oui)."
+End Function
+
+'##############################################################################
+' modMain
+'##############################################################################
+Public Sub LancerAnalyse()
+    Dim p As TParametres
+    Dim dates() As Date, prix() As Double, dividendes() As Double, nbDatesIgnorees As Long
+    Dim rend() As Double, moy() As Double, cov() As Double
+    Dim poids() As Double, rendFrontiere() As Double, sigmaFrontiere() As Double, efficient() As Boolean
+    Dim wMvp() As Double, nbDomines As Long
+    Dim rendAlea() As Double, sigmaAlea() As Double
+    Dim debut As Double, message As String
+
+    On Error GoTo GestionErreur
+    debut = Timer
+    Application.ScreenUpdating = False
+    Application.StatusBar = "Lecture des parametres..."
+
+    ' 1) Parametres et donnees
+    AvertissementGraphique = ""
+    p = LireParametres()
+    ImporterDonnees p, dates, prix, dividendes, nbDatesIgnorees
+
+    ' 2) Statistiques : rendements, moyennes, variances, covariances
+    Application.StatusBar = "Calcul des statistiques..."
+    rend = CalculerRendements(prix, dividendes)
+    moy = CalculerMoyennes(rend)
+    cov = CalculerCovariances(rend, moy)
+
+    ' 3) Frontiere efficiente et portefeuilles aleatoires
+    CalculerFrontiere cov, moy, p.NbPointsFrontiere, poids, rendFrontiere, sigmaFrontiere, efficient, wMvp, nbDomines
+    If p.NbAleatoires > 0 Then
+        Application.StatusBar = "Tirage des portefeuilles aleatoires..."
+        GenererPortefeuillesAleatoires cov, moy, p.NbAleatoires, rendAlea, sigmaAlea
+    End If
+
+    ' 4) Ecriture des resultats
+    Application.StatusBar = "Ecriture des resultats..."
+    EcrireCours p, dates, prix
+    EcrireRendements p, dates, rend
+    EcrireStatistiques p, rend, moy, cov
+    EcrireDeuxTitres p, moy, cov
+    If p.NbAleatoires > 0 Then
+        EcrireAleatoires rendAlea, sigmaAlea
+    Else
+        SupprimerFeuille FEUILLE_ALEATOIRES
+    End If
+    EcrireFrontiere p, poids, rendFrontiere, sigmaFrontiere, efficient, wMvp, moy, cov, nbDomines, p.NbAleatoires
+    EcrireCalculateur p
+
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    FeuilleExistante(FEUILLE_FRONTIERE).Activate
+
+    message = "Analyse terminee en " & Format$(Timer - debut, "0.0") & " s." & vbLf & vbLf & _
+              p.NbTitres & " actions, " & UBound(rend, 1) & " rendements journaliers" & vbLf & _
+              "du " & Format$(dates(1), "dd/mm/yyyy") & " au " & Format$(dates(UBound(dates)), "dd/mm/yyyy") & "." & vbLf & vbLf & _
+              "Portefeuille de variance minimale :" & vbLf & _
+              "  R(pf) = " & Format$(RendementPortefeuille(wMvp, moy), "0.0000%") & _
+              "   sigma(pf) = " & Format$(EcartTypePortefeuille(wMvp, cov), "0.0000%")
+    If nbDatesIgnorees > 0 Then
+        message = message & vbLf & vbLf & "Remarque : " & nbDatesIgnorees & _
+                  " date(s) absente(s) d'au moins un fichier ont ete ignorees."
+    End If
+    If AvertissementGraphique <> "" Then
+        message = message & vbLf & vbLf & "Attention, graphique(s) non cree(s) :" & AvertissementGraphique
+    End If
+    MsgBox message, vbInformation, "Frontiere efficiente"
+    Exit Sub
+
+GestionErreur:
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    If Err.Number = ERR_UTILISATEUR Then
+        MsgBox Err.Description, vbExclamation, "Frontiere efficiente - probleme a corriger"
+    Else
+        MsgBox "Erreur inattendue n" & Chr$(176) & " " & Err.Number & " :" & vbLf & Err.Description & vbLf & vbLf & _
+               "Verifiez les fichiers CSV et les parametres, puis relancez.", vbCritical, "Frontiere efficiente"
+    End If
+End Sub
+
+' Supprime toutes les feuilles de resultats (les parametres sont conserves).
+Public Sub EffacerResultats()
+    Dim noms As Variant, i As Long
+    If MsgBox("Supprimer toutes les feuilles de resultats ?" & vbLf & _
+              "(Les feuilles Parametres et Mode d'emploi sont conservees.)", _
+              vbQuestion + vbYesNo, "Frontiere efficiente") = vbNo Then Exit Sub
+    noms = Array(FEUILLE_COURS, FEUILLE_RENDEMENTS, FEUILLE_STATS, FEUILLE_DEUX_TITRES, _
+                 FEUILLE_FRONTIERE, FEUILLE_ALEATOIRES, FEUILLE_CALCULATEUR)
+    For i = LBound(noms) To UBound(noms)
+        SupprimerFeuille CStr(noms(i))
+    Next i
+    FeuilleExistante(FEUILLE_PARAMETRES).Activate
+End Sub
+
+' Ajoute les boutons "Lancer l'analyse" et "Effacer les resultats" sur la feuille Parametres.
+' A lancer une seule fois apres l'import des modules (Outils > Macro > Macros > CreerBoutons).
+Public Sub CreerBoutons()
+    Dim ws As Worksheet
+    Set ws = FeuilleExistante(FEUILLE_PARAMETRES)
+    If ws Is Nothing Then
+        MsgBox "La feuille '" & FEUILLE_PARAMETRES & "' est introuvable.", vbExclamation
+        Exit Sub
+    End If
+    SupprimerBouton ws, "btnLancer"
+    SupprimerBouton ws, "btnEffacer"
+    AjouterBouton ws, "btnLancer", "Lancer l'analyse", "LancerAnalyse", ws.Range("F4")
+    AjouterBouton ws, "btnEffacer", "Effacer les resultats", "EffacerResultats", ws.Range("F7")
+    MsgBox "Boutons crees sur la feuille " & FEUILLE_PARAMETRES & ".", vbInformation
+End Sub
+
+'------------------------------------------------------------------------------
+' Outils
+'------------------------------------------------------------------------------
+
+Private Sub AjouterBouton(ByVal ws As Worksheet, ByVal nom As String, ByVal texte As String, _
+                          ByVal macro As String, ByVal position As Range)
+    Dim b As Object
+    Set b = ws.Buttons.Add(position.Left, position.Top, 170, 32)   ' bouton de formulaire (compatible Mac)
+    b.Name = nom
+    b.Caption = texte
+    b.OnAction = macro
+End Sub
+
+Private Sub SupprimerBouton(ByVal ws As Worksheet, ByVal nom As String)
+    On Error Resume Next
+    ws.Buttons(nom).Delete
+    On Error GoTo 0
+End Sub
+
+Public Sub SupprimerFeuille(ByVal nom As String)
+    Dim ws As Worksheet
+    Set ws = FeuilleExistante(nom)
+    If ws Is Nothing Then Exit Sub
+    Application.DisplayAlerts = False
+    ws.Delete
+    Application.DisplayAlerts = True
+End Sub
+
+'##############################################################################
+' modImport
+'##############################################################################
+' Lit les fichiers de toutes les actions retenues et renvoie des tableaux
+' alignes sur les dates communes a toutes les actions :
+'   dates(1 To T), prix(1 To T, 1 To N), dividendes(1 To T, 1 To N)
+Public Sub ImporterDonnees(ByRef p As TParametres, ByRef dates() As Date, ByRef prix() As Double, _
+                           ByRef dividendes() As Double, ByRef nbDatesIgnorees As Long)
+    Dim i As Long, t As Long, k As Long, nbDates As Long
+    Dim chemins() As String
+    Dim datesTitres() As Variant, prixTitres() As Variant, divTitres() As Variant
+    Dim d() As Date, c() As Double, dv() As Double
+    Dim communes() As Date, autres() As Date
+
+    ReDim chemins(1 To p.NbTitres)
+    ReDim datesTitres(1 To p.NbTitres)
+    ReDim prixTitres(1 To p.NbTitres)
+    ReDim divTitres(1 To p.NbTitres)
+
+    For i = 1 To p.NbTitres
+        chemins(i) = CheminFichier(p.Dossier, p.Codes(i))
+    Next i
+    DemanderAccesFichiers chemins
+
+    ' 1) Lecture de chaque fichier
+    For i = 1 To p.NbTitres
+        Application.StatusBar = "Lecture du fichier " & p.Codes(i) & ".csv ..."
+        LireFichierCours chemins(i), d, c, dv
+        datesTitres(i) = CopieDates(d)       ' copies explicites : chaque action garde ses propres tableaux
+        prixTitres(i) = CopieNombres(c)
+        divTitres(i) = CopieNombres(dv)
+    Next i
+
+    ' 2) Dates presentes dans TOUS les fichiers
+    d = datesTitres(1)
+    communes = CopieDates(d)
+    nbDates = UBound(communes)
+    For i = 2 To p.NbTitres
+        autres = datesTitres(i)
+        nbDates = IntersecterDates(communes, nbDates, autres)
+    Next i
+    If nbDates < 3 Then
+        ErreurUtilisateur "Les fichiers n'ont pas assez de dates en commun (" & nbDates & ")." & vbLf & _
+                          "Verifiez qu'ils couvrent tous la meme periode."
+    End If
+
+    ' 3) Construction des tableaux alignes
+    ReDim dates(1 To nbDates)
+    ReDim prix(1 To nbDates, 1 To p.NbTitres)
+    ReDim dividendes(1 To nbDates, 1 To p.NbTitres)
+    For t = 1 To nbDates
+        dates(t) = communes(t)
+    Next t
+    nbDatesIgnorees = 0
+    For i = 1 To p.NbTitres
+        d = datesTitres(i)
+        c = prixTitres(i)
+        dv = divTitres(i)
+        If UBound(d) - nbDates > nbDatesIgnorees Then nbDatesIgnorees = UBound(d) - nbDates
+        k = 1
+        For t = 1 To nbDates
+            Do While d(k) < dates(t)        ' on saute les dates absentes des autres fichiers
+                k = k + 1
+            Loop
+            prix(t, i) = c(k)
+            dividendes(t, i) = dv(k)
+        Next t
+    Next i
+End Sub
+
+' Construit le chemin complet du fichier CSV d'une action.
+Public Function CheminFichier(ByVal dossier As String, ByVal code As String) As String
+    Dim sep As String
+    sep = Application.PathSeparator
+    If Right$(dossier, 1) = sep Then dossier = Left$(dossier, Len(dossier) - 1)
+    CheminFichier = dossier & sep & code & ".csv"
+End Function
+
+' Sur Mac, Excel doit obtenir l'autorisation de lire des fichiers hors de son dossier.
+Private Sub DemanderAccesFichiers(ByRef chemins() As String)
+#If Mac Then
+    Dim liste() As Variant, i As Long
+    ReDim liste(0 To UBound(chemins) - 1)
+    For i = 1 To UBound(chemins)
+        liste(i - 1) = chemins(i)
+    Next i
+    If Not GrantAccessToMultipleFiles(liste) Then
+        ErreurUtilisateur "Excel n'a pas recu l'autorisation de lire les fichiers CSV." & vbLf & _
+                          "Relancez la macro et cliquez sur 'Autoriser l'acces'."
+    End If
+#End If
+End Sub
+
+' Lit un fichier CSV et renvoie ses dates, cours de cloture et dividendes (ordre croissant).
+Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
+                            ByRef cours() As Double, ByRef dividendes() As Double)
+    Dim contenu As String, sep As String
+    Dim lignes() As String, champs() As String
+    Dim colDate As Long, colCours As Long, colDiv As Long, colMax As Long
+    Dim i As Long, n As Long
+    Dim d As Date, prix As Double, dv As Double
+    Dim okDate As Boolean, okPrix As Boolean, okDiv As Boolean
+
+    contenu = LireTexte(chemin)
+    If Left$(contenu, 3) = Chr$(239) & Chr$(187) & Chr$(191) Then contenu = Mid$(contenu, 4) ' BOM UTF-8
+    contenu = Replace(contenu, vbCr, "")    ' fins de ligne Windows / Mac / Unix
+    lignes = Split(contenu, vbLf)
+    If UBound(lignes) < 3 Then
+        ErreurUtilisateur "Le fichier suivant est vide ou trop court :" & vbLf & chemin
+    End If
+
+    If InStr(lignes(0), ";") > 0 Then sep = ";" Else sep = ","
+    TrouverColonnes Split(lignes(0), sep), chemin, colDate, colCours, colDiv
+    colMax = colDate
+    If colCours > colMax Then colMax = colCours
+    If colDiv > colMax Then colMax = colDiv
+
+    ReDim dates(1 To UBound(lignes))
+    ReDim cours(1 To UBound(lignes))
+    ReDim dividendes(1 To UBound(lignes))
+    For i = 1 To UBound(lignes)
+        If Len(Trim$(lignes(i))) > 0 Then
+            champs = Split(lignes(i), sep)
+            If UBound(champs) >= colMax Then
+                d = ConvertirDate(champs(colDate), okDate)
+                prix = ConvertirNombre(champs(colCours), sep, okPrix)
+                dv = 0
+                If colDiv >= 0 Then
+                    dv = ConvertirNombre(champs(colDiv), sep, okDiv)
+                    If Not okDiv Then dv = 0
+                End If
+                ' Les lignes sans cours (ex. "null") sont ignorees
+                If okDate And okPrix Then
+                    If prix <= 0 Then
+                        ErreurUtilisateur "Cours nul ou negatif a la ligne " & (i + 1) & " du fichier :" & vbLf & chemin
+                    End If
+                    n = n + 1
+                    dates(n) = d
+                    cours(n) = prix
+                    dividendes(n) = dv
+                End If
+            End If
+        End If
+    Next i
+
+    If n < 3 Then
+        ErreurUtilisateur "Aucune donnee exploitable dans le fichier :" & vbLf & chemin & vbLf & _
+                          "Format attendu : une colonne Date et une colonne Close."
+    End If
+    ReDim Preserve dates(1 To n)
+    ReDim Preserve cours(1 To n)
+    ReDim Preserve dividendes(1 To n)
+
+    If dates(1) > dates(n) Then InverserOrdre dates, cours, dividendes   ' fichier du plus recent au plus ancien
+    For i = 2 To n
+        If dates(i) <= dates(i - 1) Then
+            ErreurUtilisateur "Dates non triees ou en double (" & Format$(dates(i), "dd/mm/yyyy") & _
+                              ") dans le fichier :" & vbLf & chemin
+        End If
+    Next i
+End Sub
+
+' Lit tout le contenu d'un fichier texte.
+Private Function LireTexte(ByVal chemin As String) As String
+    Dim numero As Integer, ouvert As Boolean
+    numero = FreeFile
+    On Error Resume Next
+    Open chemin For Input Access Read As #numero
+    ouvert = (Err.Number = 0)
+    Err.Clear
+    On Error GoTo 0
+    If Not ouvert Then
+        ErreurUtilisateur "Impossible d'ouvrir le fichier :" & vbLf & chemin & vbLf & vbLf & _
+                          "Verifiez que le fichier existe, qu'il porte exactement le nom du code " & _
+                          "(ex. MC.csv) et qu'il se trouve dans le dossier indique dans la feuille Parametres."
+    End If
+    LireTexte = Input$(LOF(numero), #numero)
+    Close #numero
+End Function
+
+' Repere les colonnes Date, cours de cloture et dividende dans la ligne d'en-tete.
+' Priorite au cours "Close" + colonne "Dividend" (formule du cours) ; a defaut, cours ajuste ;
+' a defaut, cours "Close" seul (dividendes ignores).
+Private Sub TrouverColonnes(ByRef entete() As String, ByVal chemin As String, ByRef colDate As Long, _
+                            ByRef colCours As Long, ByRef colDiv As Long)
+    Dim i As Long, nom As String, colAjuste As Long
+    colDate = -1: colCours = -1: colDiv = -1: colAjuste = -1
+    For i = 0 To UBound(entete)
+        nom = LCase$(Trim$(Replace(entete(i), """", "")))
+        If InStr(nom, "date") > 0 And colDate < 0 Then
+            colDate = i
+        ElseIf InStr(nom, "adj") > 0 Or InStr(nom, "ajust") > 0 Then
+            colAjuste = i
+        ElseIf Left$(nom, 5) = "close" Or (Left$(nom, 2) = "cl" And InStr(nom, "ture") > 0) Then
+            colCours = i
+        ElseIf InStr(nom, "divid") > 0 Then
+            colDiv = i
+        End If
+    Next i
+    ' Sans colonne "Dividend", on prend le cours ajuste, qui inclut deja les dividendes
+    If colAjuste >= 0 And (colCours < 0 Or colDiv < 0) Then
+        colCours = colAjuste
+        colDiv = -1
+    End If
+    If colDate < 0 Or colCours < 0 Then
+        ErreurUtilisateur "En-tete non reconnu dans le fichier :" & vbLf & chemin & vbLf & _
+                          "La premiere ligne doit contenir au moins les colonnes 'Date' et 'Close'."
+    End If
+End Sub
+
+' Convertit "2025-01-31" ou "31/01/2025" (heure eventuelle ignoree) en date.
+Private Function ConvertirDate(ByVal texte As String, ByRef ok As Boolean) As Date
+    texte = Trim$(Replace(texte, """", ""))
+    ok = True
+    If texte Like "####-##-##*" Then
+        ConvertirDate = DateSerial(CInt(Left$(texte, 4)), CInt(Mid$(texte, 6, 2)), CInt(Mid$(texte, 9, 2)))
+    ElseIf texte Like "##/##/####*" Then
+        ConvertirDate = DateSerial(CInt(Mid$(texte, 7, 4)), CInt(Mid$(texte, 4, 2)), CInt(Left$(texte, 2)))
+    Else
+        ok = False
+    End If
+End Function
+
+' Convertit un texte en nombre sans dependre des reglages regionaux d'Excel.
+Private Function ConvertirNombre(ByVal texte As String, ByVal sep As String, ByRef ok As Boolean) As Double
+    Dim i As Long
+    texte = Replace(Replace(Replace(texte, """", ""), " ", ""), Chr$(160), "")
+    If sep = ";" Then texte = Replace(texte, ",", ".")   ' virgule decimale (format francais)
+    ok = False
+    If Len(texte) = 0 Then Exit Function
+    For i = 1 To Len(texte)
+        If InStr("0123456789.-+eE", Mid$(texte, i, 1)) = 0 Then Exit Function
+    Next i
+    If Not (texte Like "*#*") Then Exit Function
+    ok = True
+    ConvertirNombre = Val(texte)            ' Val lit toujours le point comme separateur decimal
+End Function
+
+' Remet les observations dans l'ordre chronologique.
+Private Sub InverserOrdre(ByRef dates() As Date, ByRef cours() As Double, ByRef dividendes() As Double)
+    Dim i As Long, n As Long, d As Date, x As Double
+    n = UBound(dates)
+    For i = 1 To n \ 2
+        d = dates(i): dates(i) = dates(n + 1 - i): dates(n + 1 - i) = d
+        x = cours(i): cours(i) = cours(n + 1 - i): cours(n + 1 - i) = x
+        x = dividendes(i): dividendes(i) = dividendes(n + 1 - i): dividendes(n + 1 - i) = x
+    Next i
+End Sub
+
+' Garde dans "communes" (nbCommunes premieres cases) les dates aussi presentes dans "autres".
+' Les deux listes sont triees : on les parcourt en parallele. Renvoie le nouveau nombre de dates.
+Private Function IntersecterDates(ByRef communes() As Date, ByVal nbCommunes As Long, _
+                                  ByRef autres() As Date) As Long
+    Dim i As Long, j As Long, n As Long
+    i = 1: j = 1
+    Do While i <= nbCommunes And j <= UBound(autres)
+        If communes(i) = autres(j) Then
+            n = n + 1
+            communes(n) = communes(i)
+            i = i + 1: j = j + 1
+        ElseIf communes(i) < autres(j) Then
+            i = i + 1
+        Else
+            j = j + 1
+        End If
+    Loop
+    IntersecterDates = n
+End Function
+
+' Copie independante d'un tableau de dates.
+Private Function CopieDates(ByRef source() As Date) As Variant
+    Dim copie() As Date, i As Long
+    ReDim copie(LBound(source) To UBound(source))
+    For i = LBound(source) To UBound(source)
+        copie(i) = source(i)
+    Next i
+    CopieDates = copie
+End Function
+
+' Copie independante d'un tableau de nombres.
+Private Function CopieNombres(ByRef source() As Double) As Variant
+    Dim copie() As Double, i As Long
+    ReDim copie(LBound(source) To UBound(source))
+    For i = LBound(source) To UBound(source)
+        copie(i) = source(i)
+    Next i
+    CopieNombres = copie
+End Function
+
+'##############################################################################
+' modStats
+'##############################################################################
+' Rendements journaliers : rend(1 To T-1, 1 To N)
+Public Function CalculerRendements(ByRef prix() As Double, ByRef dividendes() As Double) As Variant   ' tableau de Double
+    Dim rend() As Double, t As Long, i As Long
+    ReDim rend(1 To UBound(prix, 1) - 1, 1 To UBound(prix, 2))
+    For i = 1 To UBound(prix, 2)
+        For t = 2 To UBound(prix, 1)
+            rend(t - 1, i) = (dividendes(t, i) + prix(t, i) - prix(t - 1, i)) / prix(t - 1, i)
+        Next t
+    Next i
+    CalculerRendements = rend
+End Function
+
+' Rendement moyen de chaque action : moy(1 To N)
+Public Function CalculerMoyennes(ByRef rend() As Double) As Variant   ' tableau de Double
+    Dim moy() As Double, t As Long, i As Long, nbObs As Long
+    nbObs = UBound(rend, 1)
+    ReDim moy(1 To UBound(rend, 2))
+    For i = 1 To UBound(rend, 2)
+        For t = 1 To nbObs
+            moy(i) = moy(i) + rend(t, i)
+        Next t
+        moy(i) = moy(i) / nbObs
+    Next i
+    CalculerMoyennes = moy
+End Function
+
+' Matrice de variance-covariance : cov(i, j) = 1/n * somme (R_i - moy_i)(R_j - moy_j)
+' La diagonale contient les variances.
+Public Function CalculerCovariances(ByRef rend() As Double, ByRef moy() As Double) As Variant   ' tableau de Double
+    Dim cov() As Double, t As Long, i As Long, j As Long, n As Long, nbObs As Long, somme As Double
+    n = UBound(rend, 2)
+    nbObs = UBound(rend, 1)
+    ReDim cov(1 To n, 1 To n)
+    For i = 1 To n
+        For j = i To n
+            somme = 0
+            For t = 1 To nbObs
+                somme = somme + (rend(t, i) - moy(i)) * (rend(t, j) - moy(j))
+            Next t
+            cov(i, j) = somme / nbObs
+            cov(j, i) = cov(i, j)          ' la matrice est symetrique
+        Next j
+    Next i
+    CalculerCovariances = cov
+End Function
+
+' Coefficient de correlation entre les actions i et j
+Public Function Correlation(ByRef cov() As Double, ByVal i As Long, ByVal j As Long) As Double
+    If cov(i, i) <= 0 Or cov(j, j) <= 0 Then
+        Correlation = 0
+    Else
+        Correlation = cov(i, j) / Sqr(cov(i, i) * cov(j, j))
+    End If
+End Function
+
+'##############################################################################
+' modPortefeuille
+'##############################################################################
+Public Function RendementPortefeuille(ByRef poids() As Double, ByRef moy() As Double) As Double
+    Dim i As Long, total As Double
+    For i = 1 To UBound(moy)
+        total = total + poids(i) * moy(i)
+    Next i
+    RendementPortefeuille = total
+End Function
+
+Public Function VariancePortefeuille(ByRef poids() As Double, ByRef cov() As Double) As Double
+    Dim i As Long, j As Long, total As Double
+    For i = 1 To UBound(cov, 1)
+        For j = 1 To UBound(cov, 2)
+            total = total + poids(i) * poids(j) * cov(i, j)
+        Next j
+    Next i
+    VariancePortefeuille = total
+End Function
+
+Public Function EcartTypePortefeuille(ByRef poids() As Double, ByRef cov() As Double) As Double
+    Dim v As Double
+    v = VariancePortefeuille(poids, cov)
+    If v < 0 Then v = 0                      ' securite contre les erreurs d'arrondi
+    EcartTypePortefeuille = Sqr(v)
+End Function
+
+'##############################################################################
+' modOptimisation
+'##############################################################################
+' Calcule la frontiere de variance minimale, de la plus faible a la plus forte rentabilite.
+'   poids(1 To K, 1 To N), rendements(1 To K), ecartsTypes(1 To K), efficient(1 To K)
+'   wMvp(1 To N) : portefeuille de variance minimale ; nbDomines : points sous ce portefeuille
+Public Sub CalculerFrontiere(ByRef cov() As Double, ByRef moy() As Double, ByVal nbPointsEfficients As Long, _
+                             ByRef poids() As Double, ByRef rendements() As Double, ByRef ecartsTypes() As Double, _
+                             ByRef efficient() As Boolean, ByRef wMvp() As Double, ByRef nbDomines As Long)
+    Dim n As Long, k As Long, i As Long, nbPoints As Long
+    Dim iMin As Long, iMax As Long, rMvp As Double, cible As Double, ecartMu As Double
+    Dim w() As Double
+
+    n = UBound(moy)
+    iMin = 1: iMax = 1
+    For i = 2 To n
+        If moy(i) < moy(iMin) Then iMin = i
+        If moy(i) > moy(iMax) Then iMax = i
+    Next i
+    ecartMu = moy(iMax) - moy(iMin)
+
+    wMvp = PortefeuilleVarianceMinimale(cov, moy)
+    rMvp = RendementPortefeuille(wMvp, moy)
+
+    ' Partie dominee (sous le portefeuille de variance minimale), si elle existe
+    nbDomines = 0
+    If rMvp - moy(iMin) > 0.000001 * ecartMu Then
+        nbDomines = nbPointsEfficients \ 2
+        If nbDomines < 2 Then nbDomines = 2
+    End If
+    If moy(iMax) - rMvp <= 0.000001 * ecartMu Then nbPointsEfficients = 1
+
+    nbPoints = nbDomines + nbPointsEfficients
+    ReDim poids(1 To nbPoints, 1 To n)
+    ReDim rendements(1 To nbPoints)
+    ReDim ecartsTypes(1 To nbPoints)
+    ReDim efficient(1 To nbPoints)
+
+    ' Partie efficiente : du portefeuille de variance minimale a l'action la plus rentable
+    w = Copie(wMvp)
+    For k = 1 To nbPointsEfficients
+        Application.StatusBar = "Calcul de la frontiere efficiente : point " & k & " / " & nbPointsEfficients
+        If k = 1 Then
+            w = Copie(wMvp)
+        ElseIf k = nbPointsEfficients Then
+            w = PortefeuilleUnTitre(n, iMax)
+        Else
+            cible = rMvp + (k - 1) * (moy(iMax) - rMvp) / (nbPointsEfficients - 1)
+            w = PortefeuillePourRendementCible(cov, moy, cible, w, rMvp)
+        End If
+        StockerPoint nbDomines + k, w, cov, moy, True, poids, rendements, ecartsTypes, efficient
+    Next k
+
+    ' Partie dominee : de l'action la moins rentable au portefeuille de variance minimale
+    w = Copie(wMvp)
+    For k = nbDomines To 1 Step -1
+        If k = 1 Then
+            w = PortefeuilleUnTitre(n, iMin)
+        Else
+            cible = moy(iMin) + (k - 1) * (rMvp - moy(iMin)) / nbDomines
+            w = PortefeuillePourRendementCible(cov, moy, cible, w, rMvp)
+        End If
+        StockerPoint k, w, cov, moy, False, poids, rendements, ecartsTypes, efficient
+    Next k
+End Sub
+
+' Portefeuille de variance minimale (lambda = 0).
+Public Function PortefeuilleVarianceMinimale(ByRef cov() As Double, ByRef moy() As Double) As Variant   ' tableau de Double
+    Dim covN() As Double, moyN() As Double, w() As Double, i As Long, n As Long
+    n = UBound(moy)
+    Normaliser cov, moy, covN, moyN
+    ReDim w(1 To n)
+    For i = 1 To n
+        w(i) = 1 / n                         ' depart : portefeuille equipondere
+    Next i
+    MinimiserCritere covN, moyN, 0, w
+    PortefeuilleVarianceMinimale = w
+End Function
+
+' Portefeuille de risque minimal ayant le rendement "cible".
+' wDepart : point de depart (accelere le calcul) ; rMvp : rendement du portefeuille de variance minimale.
+Public Function PortefeuillePourRendementCible(ByRef cov() As Double, ByRef moy() As Double, ByVal cible As Double, _
+                                               ByRef wDepart() As Double, ByVal rMvp As Double) As Variant   ' tableau de Double
+    Dim covN() As Double, moyN() As Double, w() As Double
+    Dim sens As Double, bas As Double, haut As Double, milieu As Double
+    Dim tolerance As Double, ecart As Double, iter As Long
+
+    Normaliser cov, moy, covN, moyN
+    tolerance = 0.00000001 * EtendueMoyennes(moy)
+    If tolerance <= 0 Then tolerance = 1E-15
+
+    ' Cible au-dessus du portefeuille de variance minimale : lambda > 0 ; en dessous : lambda < 0
+    If cible >= rMvp Then sens = 1 Else sens = -1
+
+    ' 1) On encadre le bon lambda entre "bas" et "haut" en doublant "haut"
+    w = Copie(wDepart)
+    bas = 0
+    haut = sens
+    For iter = 1 To 80
+        MinimiserCritere covN, moyN, haut, w
+        If sens * (RendementPortefeuille(w, moy) - cible) >= 0 Then Exit For
+        bas = haut
+        haut = haut * 2
+    Next iter
+
+    ' 2) Dichotomie entre "bas" et "haut"
+    For iter = 1 To MAX_DICHOTOMIE
+        milieu = (bas + haut) / 2
+        MinimiserCritere covN, moyN, milieu, w
+        ecart = RendementPortefeuille(w, moy) - cible
+        If Abs(ecart) < tolerance Then Exit For
+        If sens * ecart < 0 Then bas = milieu Else haut = milieu
+    Next iter
+
+    PortefeuillePourRendementCible = w
+End Function
+
+' Portefeuille investi a 100 % dans l'action i.
+Public Function PortefeuilleUnTitre(ByVal n As Long, ByVal i As Long) As Variant   ' tableau de Double
+    Dim w() As Double
+    ReDim w(1 To n)
+    w(i) = 1
+    PortefeuilleUnTitre = w
+End Function
+
+' Tire au hasard "nb" portefeuilles (poids positifs, somme = 100 %) pour le nuage de points.
+Public Sub GenererPortefeuillesAleatoires(ByRef cov() As Double, ByRef moy() As Double, ByVal nb As Long, _
+                                          ByRef rendements() As Double, ByRef ecartsTypes() As Double)
+    Dim k As Long, i As Long, n As Long, total As Double, w() As Double
+    n = UBound(moy)
+    ReDim w(1 To n)
+    ReDim rendements(1 To nb)
+    ReDim ecartsTypes(1 To nb)
+    Dim graine As Single
+    graine = Rnd(-1)                        ' Rnd(-1) puis Randomize : graine fixe,
+    Randomize 2025                          ' donc memes resultats a chaque execution
+    For k = 1 To nb
+        total = 0
+        For i = 1 To n
+            w(i) = -Log(1 - Rnd())          ' tirage uniforme sur l'ensemble des poids possibles
+            total = total + w(i)
+        Next i
+        For i = 1 To n
+            w(i) = w(i) / total
+        Next i
+        rendements(k) = RendementPortefeuille(w, moy)
+        ecartsTypes(k) = EcartTypePortefeuille(w, cov)
+    Next k
+End Sub
+
+'------------------------------------------------------------------------------
+' Outils internes
+'------------------------------------------------------------------------------
+
+' Enregistre un point de la frontiere dans les tableaux de resultats.
+Private Sub StockerPoint(ByVal k As Long, ByRef w() As Double, ByRef cov() As Double, ByRef moy() As Double, _
+                         ByVal estEfficient As Boolean, ByRef poids() As Double, ByRef rendements() As Double, _
+                         ByRef ecartsTypes() As Double, ByRef efficient() As Boolean)
+    Dim i As Long
+    For i = 1 To UBound(w)
+        poids(k, i) = w(i)
+    Next i
+    rendements(k) = RendementPortefeuille(w, moy)
+    ecartsTypes(k) = EcartTypePortefeuille(w, cov)
+    efficient(k) = estEfficient
+End Sub
+
+' Met les donnees a une echelle proche de 1 pour que la descente converge bien
+' (les variances journalieres sont de l'ordre de 0,0001). Ne change pas la solution.
+Private Sub Normaliser(ByRef cov() As Double, ByRef moy() As Double, ByRef covN() As Double, ByRef moyN() As Double)
+    Dim n As Long, i As Long, j As Long, echelleCov As Double, echelleMoy As Double
+    n = UBound(moy)
+    ReDim covN(1 To n, 1 To n)
+    ReDim moyN(1 To n)
+    echelleCov = SommeLigneMax(cov)
+    If echelleCov <= 0 Then echelleCov = 1
+    For i = 1 To n
+        If Abs(moy(i)) > echelleMoy Then echelleMoy = Abs(moy(i))
+    Next i
+    If echelleMoy <= 0 Then echelleMoy = 1
+    For i = 1 To n
+        moyN(i) = moy(i) / echelleMoy
+        For j = 1 To n
+            covN(i, j) = cov(i, j) / echelleCov
+        Next j
+    Next i
+End Sub
+
+' Minimise Var - lambda * E sur l'ensemble des poids autorises (w : point de depart, puis resultat).
+Private Sub MinimiserCritere(ByRef covN() As Double, ByRef moyN() As Double, ByVal lambda As Double, ByRef w() As Double)
+    Dim n As Long, i As Long, j As Long, iter As Long
+    Dim pas As Double, gradient As Double, ecart As Double
+    Dim v() As Double, wNouveau() As Double
+
+    n = UBound(w)
+    ReDim v(1 To n)
+    ReDim wNouveau(1 To n)
+    pas = 1 / (2 * SommeLigneMax(covN))     ' pas assurant la convergence
+
+    For iter = 1 To MAX_ITERATIONS
+        ' Un pas dans la direction qui fait baisser le critere...
+        For i = 1 To n
+            gradient = -lambda * moyN(i)
+            For j = 1 To n
+                gradient = gradient + 2 * covN(i, j) * w(j)
+            Next j
+            v(i) = w(i) - pas * gradient
+        Next i
+        ' ... puis retour vers des poids valides (positifs, somme = 100 %)
+        ProjeterSurSimplexe v, wNouveau
+        ecart = 0
+        For i = 1 To n
+            If Abs(wNouveau(i) - w(i)) > ecart Then ecart = Abs(wNouveau(i) - w(i))
+            w(i) = wNouveau(i)
+        Next i
+        If ecart < TOLERANCE_POIDS Then Exit Sub
+    Next iter
+End Sub
+
+' Ramene un vecteur v au plus proche vecteur de poids valides w (w >= 0, somme = 1).
+' On cherche theta tel que la somme des max(v_i - theta, 0) vaille 1.
+Private Sub ProjeterSurSimplexe(ByRef v() As Double, ByRef w() As Double)
+    Dim n As Long, i As Long, j As Long
+    Dim u() As Double, tmp As Double, cumul As Double, theta As Double
+
+    n = UBound(v)
+    ReDim u(1 To n)
+    For i = 1 To n
+        u(i) = v(i)
+    Next i
+    For i = 2 To n                          ' tri decroissant (tri par insertion)
+        tmp = u(i)
+        j = i - 1
+        Do While j >= 1
+            If u(j) >= tmp Then Exit Do
+            u(j + 1) = u(j)
+            j = j - 1
+        Loop
+        u(j + 1) = tmp
+    Next i
+
+    cumul = 0
+    For j = 1 To n
+        cumul = cumul + u(j)
+        If u(j) - (cumul - 1) / j > 0 Then theta = (cumul - 1) / j
+    Next j
+    For i = 1 To n
+        w(i) = v(i) - theta
+        If w(i) < 0 Then w(i) = 0
+    Next i
+End Sub
+
+'' Copie independante d'un vecteur de poids (pour ne pas modifier l'original).
+Private Function Copie(ByRef source() As Double) As Variant
+    Dim resultat() As Double, i As Long
+    ReDim resultat(LBound(source) To UBound(source))
+    For i = LBound(source) To UBound(source)
+        resultat(i) = source(i)
+    Next i
+    Copie = resultat
+End Function
+
+' Plus grande somme des valeurs absolues d'une ligne (majore la plus grande valeur propre).
+Private Function SommeLigneMax(ByRef m() As Double) As Double
+    Dim i As Long, j As Long, somme As Double, maxi As Double
+    For i = 1 To UBound(m, 1)
+        somme = 0
+        For j = 1 To UBound(m, 2)
+            somme = somme + Abs(m(i, j))
+        Next j
+        If somme > maxi Then maxi = somme
+    Next i
+    SommeLigneMax = maxi
+End Function
+
+Private Function EtendueMoyennes(ByRef moy() As Double) As Double
+    Dim i As Long, mini As Double, maxi As Double
+    mini = moy(1): maxi = moy(1)
+    For i = 2 To UBound(moy)
+        If moy(i) < mini Then mini = moy(i)
+        If moy(i) > maxi Then maxi = moy(i)
+    Next i
+    EtendueMoyennes = maxi - mini
+End Function
+
+'##############################################################################
+' modSorties
+'##############################################################################
+' Cree la feuille si besoin, sinon l'efface (cellules et graphiques).
+Public Function PreparerFeuille(ByVal nom As String) As Worksheet
+    Dim ws As Worksheet
+    Set ws = FeuilleExistante(nom)
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        ws.Name = nom
+    Else
+        Do While ws.ChartObjects.Count > 0
+            ws.ChartObjects(1).Delete
+        Loop
+        ws.Cells.Clear
+    End If
+    Set PreparerFeuille = ws
+End Function
+
+' Feuille "Cours" : dates et cours de cloture
+Public Sub EcrireCours(ByRef p As TParametres, ByRef dates() As Date, ByRef prix() As Double)
+    Dim ws As Worksheet, sortie() As Variant, t As Long, i As Long
+    Set ws = PreparerFeuille(FEUILLE_COURS)
+    ReDim sortie(0 To UBound(dates), 0 To p.NbTitres)
+    sortie(0, 0) = "Date"
+    For i = 1 To p.NbTitres
+        sortie(0, i) = p.Codes(i)
+    Next i
+    For t = 1 To UBound(dates)
+        sortie(t, 0) = dates(t)
+        For i = 1 To p.NbTitres
+            sortie(t, i) = prix(t, i)
+        Next i
+    Next t
+    ws.Range("A1").Resize(UBound(dates) + 1, p.NbTitres + 1).Value = sortie
+    ws.Range("A2").Resize(UBound(dates), 1).NumberFormat = "dd/mm/yyyy"
+    ws.Range("B2").Resize(UBound(dates), p.NbTitres).NumberFormat = "0.00"
+    FormaterEntete ws.Range("A1").Resize(1, p.NbTitres + 1)
+    ws.Columns(1).ColumnWidth = 12
+End Sub
+
+' Feuille "Rendements" : R_t = (D_t + P_t - P_(t-1)) / P_(t-1)
+Public Sub EcrireRendements(ByRef p As TParametres, ByRef dates() As Date, ByRef rend() As Double)
+    Dim ws As Worksheet, sortie() As Variant, t As Long, i As Long, nbObs As Long
+    Set ws = PreparerFeuille(FEUILLE_RENDEMENTS)
+    nbObs = UBound(rend, 1)
+    ReDim sortie(0 To nbObs, 0 To p.NbTitres)
+    sortie(0, 0) = "Date"
+    For i = 1 To p.NbTitres
+        sortie(0, i) = p.Codes(i)
+    Next i
+    For t = 1 To nbObs
+        sortie(t, 0) = dates(t + 1)            ' rendement entre la veille et ce jour
+        For i = 1 To p.NbTitres
+            sortie(t, i) = rend(t, i)
+        Next i
+    Next t
+    ws.Range("A1").Resize(nbObs + 1, p.NbTitres + 1).Value = sortie
+    ws.Range("A2").Resize(nbObs, 1).NumberFormat = "dd/mm/yyyy"
+    ws.Range("B2").Resize(nbObs, p.NbTitres).NumberFormat = "0.000%"
+    FormaterEntete ws.Range("A1").Resize(1, p.NbTitres + 1)
+    ws.Columns(1).ColumnWidth = 12
+End Sub
+
+' Feuille "Statistiques" : E(R), Var(R), ecart-type, covariances, correlations,
+' et verification par les fonctions d'Excel.
+Public Sub EcrireStatistiques(ByRef p As TParametres, ByRef rend() As Double, _
+                              ByRef moy() As Double, ByRef cov() As Double)
+    Dim ws As Worksheet, i As Long, j As Long, n As Long, nbObs As Long
+    Dim ligneCorr As Long, ligneVerif As Long, plage As String, plageJ As String
+
+    Set ws = PreparerFeuille(FEUILLE_STATS)
+    n = p.NbTitres
+    nbObs = UBound(rend, 1)
+
+    Titre ws, "Statistiques des rendements journaliers (" & nbObs & " rendements)"
+
+    ' Bloc 1 : indicateurs par action
+    ws.Cells(STAT_LIGNE_ENTETE, 1).Value = "Indicateur"
+    ws.Cells(STAT_LIGNE_MOYENNE, 1).Value = "Rendement moyen journalier E(R)"
+    ws.Cells(STAT_LIGNE_VARIANCE, 1).Value = "Variance journaliere Var(R)"
+    ws.Cells(STAT_LIGNE_ECART_TYPE, 1).Value = "Ecart-type journalier sigma(R)"
+    ws.Cells(7, 1).Value = "Rendement annualise (E(R) x " & JOURS_PAR_AN & ")"
+    ws.Cells(8, 1).Value = "Ecart-type annualise (sigma x racine(" & JOURS_PAR_AN & "))"
+    ws.Cells(9, 1).Value = "Nombre de rendements"
+    For i = 1 To n
+        ws.Cells(STAT_LIGNE_ENTETE, i + 1).Value = p.Codes(i)
+        ws.Cells(STAT_LIGNE_MOYENNE, i + 1).Value = moy(i)
+        ws.Cells(STAT_LIGNE_VARIANCE, i + 1).Value = cov(i, i)
+        ws.Cells(STAT_LIGNE_ECART_TYPE, i + 1).Value = Sqr(cov(i, i))
+        ws.Cells(7, i + 1).Value = moy(i) * JOURS_PAR_AN
+        ws.Cells(8, i + 1).Value = Sqr(cov(i, i) * JOURS_PAR_AN)
+        ws.Cells(9, i + 1).Value = nbObs
+    Next i
+    FormaterEntete ws.Cells(STAT_LIGNE_ENTETE, 1).Resize(1, n + 1)
+    ws.Cells(STAT_LIGNE_MOYENNE, 2).Resize(1, n).NumberFormat = "0.0000%"
+    ws.Cells(STAT_LIGNE_VARIANCE, 2).Resize(1, n).NumberFormat = "0.000000"
+    ws.Cells(STAT_LIGNE_ECART_TYPE, 2).Resize(1, n).NumberFormat = "0.0000%"
+    ws.Cells(7, 2).Resize(2, n).NumberFormat = "0.00%"
+
+    ' Bloc 2 : matrice de variance-covariance
+    ws.Cells(STAT_LIGNE_COV - 2, 1).Value = "Matrice de variance-covariance (journaliere)"
+    ws.Cells(STAT_LIGNE_COV - 2, 1).Font.Bold = True
+    EcrireMatrice ws, STAT_LIGNE_COV - 1, p, cov, False, "0.000000"
+
+    ' Bloc 3 : matrice des correlations
+    ligneCorr = STAT_LIGNE_COV + n + 2
+    ws.Cells(ligneCorr, 1).Value = "Matrice des correlations"
+    ws.Cells(ligneCorr, 1).Font.Bold = True
+    EcrireMatrice ws, ligneCorr + 1, p, cov, True, "0.000"
+
+    ' Bloc 4 : verification avec les fonctions d'Excel (doit donner les memes valeurs)
+    ligneVerif = ligneCorr + n + 4
+    ws.Cells(ligneVerif, 1).Value = "Verification avec les fonctions Excel (MOYENNE, VAR.P.N, ECARTYPE.PEARSON, COVARIANCE.PEARSON)"
+    ws.Cells(ligneVerif, 1).Font.Bold = True
+    ws.Cells(ligneVerif + 1, 1).Value = "Indicateur"
+    ws.Cells(ligneVerif + 2, 1).Value = "E(R) par MOYENNE"
+    ws.Cells(ligneVerif + 3, 1).Value = "Var(R) par VAR.P.N"
+    ws.Cells(ligneVerif + 4, 1).Value = "sigma(R) par ECARTYPE.PEARSON"
+    ws.Cells(ligneVerif + 5, 1).Value = "Ecart maximal avec la macro (doit etre ~0)"
+    For i = 1 To n
+        plage = PlageRendements(i, nbObs)
+        ws.Cells(ligneVerif + 1, i + 1).Value = p.Codes(i)
+        ws.Cells(ligneVerif + 2, i + 1).Formula = "=AVERAGE(" & plage & ")"
+        ws.Cells(ligneVerif + 3, i + 1).Formula = "=VAR.P(" & plage & ")"
+        ws.Cells(ligneVerif + 4, i + 1).Formula = "=STDEV.P(" & plage & ")"
+        ws.Cells(ligneVerif + 5, i + 1).Formula = "=MAX(ABS(" & ws.Cells(ligneVerif + 2, i + 1).Address(False, False) & "-" & _
+            ws.Cells(STAT_LIGNE_MOYENNE, i + 1).Address(False, False) & "),ABS(" & _
+            ws.Cells(ligneVerif + 3, i + 1).Address(False, False) & "-" & _
+            ws.Cells(STAT_LIGNE_VARIANCE, i + 1).Address(False, False) & "))"
+    Next i
+    FormaterEntete ws.Cells(ligneVerif + 1, 1).Resize(1, n + 1)
+    ws.Cells(ligneVerif + 2, 2).Resize(1, n).NumberFormat = "0.0000%"
+    ws.Cells(ligneVerif + 3, 2).Resize(1, n).NumberFormat = "0.000000"
+    ws.Cells(ligneVerif + 4, 2).Resize(1, n).NumberFormat = "0.0000%"
+    ws.Cells(ligneVerif + 5, 2).Resize(1, n).NumberFormat = "0.0E+00"
+
+    ws.Cells(ligneVerif + 7, 1).Value = "Covariances par COVARIANCE.PEARSON"
+    ws.Cells(ligneVerif + 7, 1).Font.Bold = True
+    For i = 1 To n
+        ws.Cells(ligneVerif + 8, i + 1).Value = p.Codes(i)
+        ws.Cells(ligneVerif + 8 + i, 1).Value = p.Codes(i)
+        For j = 1 To n
+            plage = PlageRendements(i, nbObs)
+            plageJ = PlageRendements(j, nbObs)
+            ws.Cells(ligneVerif + 8 + i, j + 1).Formula = "=COVARIANCE.P(" & plage & "," & plageJ & ")"
+        Next j
+    Next i
+    FormaterEntete ws.Cells(ligneVerif + 8, 1).Resize(1, n + 1)
+    ws.Cells(ligneVerif + 9, 2).Resize(n, n).NumberFormat = "0.000000"
+
+    ws.Columns(1).ColumnWidth = 44
+    ws.Range(ws.Columns(2), ws.Columns(n + 1)).ColumnWidth = 12
+End Sub
+
+' Feuille "Deux titres" : le tableau de la video (xA, xB, R(pf), var(pf), sigma(pf))
+Public Sub EcrireDeuxTitres(ByRef p As TParametres, ByRef moy() As Double, ByRef cov() As Double)
+    Dim ws As Worksheet, a As Long, b As Long, k As Long, nbLignes As Long, ligne As Long
+    Dim w() As Double, sortie() As Variant
+    Const LIGNE_TABLEAU As Long = 10
+
+    Set ws = PreparerFeuille(FEUILLE_DEUX_TITRES)
+    a = p.IndiceTitreA
+    b = p.IndiceTitreB
+    Titre ws, "Portefeuille a deux titres : A = " & p.Codes(a) & ", B = " & p.Codes(b)
+
+    ' Caracteristiques des deux titres
+    ws.Range("B3").Value = "Titre A (" & p.Codes(a) & ")"
+    ws.Range("C3").Value = "Titre B (" & p.Codes(b) & ")"
+    ws.Range("A4").Value = "E(R)"
+    ws.Range("A5").Value = "sigma(R)"
+    ws.Range("A6").Value = "Var(R)"
+    ws.Range("B4").Value = moy(a): ws.Range("C4").Value = moy(b)
+    ws.Range("B5").Value = Sqr(cov(a, a)): ws.Range("C5").Value = Sqr(cov(b, b))
+    ws.Range("B6").Value = cov(a, a): ws.Range("C6").Value = cov(b, b)
+    ws.Range("E3").Value = "Covariance(A,B)"
+    ws.Range("E4").Value = cov(a, b)
+    ws.Range("E5").Value = "Correlation"
+    ws.Range("E6").Value = Correlation(cov, a, b)
+    FormaterEntete ws.Range("B3:C3")
+    FormaterEntete ws.Range("E3")
+    FormaterEntete ws.Range("E5")
+    ws.Range("B4:C5").NumberFormat = "0.000%"
+    ws.Range("B6:C6").NumberFormat = "0.000000"
+    ws.Range("E4").NumberFormat = "0.000000"
+    ws.Range("E6").NumberFormat = "0.00"
+
+    ' Grille des poids
+    nbLignes = CLng(1 / p.PasGrille) + 1
+    ReDim sortie(0 To nbLignes, 1 To 5)
+    sortie(0, 1) = "xA (" & p.Codes(a) & ")"
+    sortie(0, 2) = "xB (" & p.Codes(b) & ")"
+    sortie(0, 3) = "R(pf)"
+    sortie(0, 4) = "var(pf)"
+    sortie(0, 5) = "sigma(pf)"
+    ReDim w(1 To p.NbTitres)
+    For k = 1 To nbLignes
+        w(a) = (k - 1) * p.PasGrille
+        w(b) = 1 - w(a)
+        sortie(k, 1) = w(a)
+        sortie(k, 2) = w(b)
+        sortie(k, 3) = RendementPortefeuille(w, moy)
+        sortie(k, 4) = VariancePortefeuille(w, cov)
+        sortie(k, 5) = EcartTypePortefeuille(w, cov)
+    Next k
+    ws.Cells(LIGNE_TABLEAU - 1, 1).Value = "Rendement et risque du portefeuille selon les poids"
+    ws.Cells(LIGNE_TABLEAU - 1, 1).Font.Bold = True
+    ws.Cells(LIGNE_TABLEAU, 1).Resize(nbLignes + 1, 5).Value = sortie
+    FormaterEntete ws.Cells(LIGNE_TABLEAU, 1).Resize(1, 5)
+    ligne = LIGNE_TABLEAU + 1
+    ws.Cells(ligne, 1).Resize(nbLignes, 2).NumberFormat = "0%"
+    ws.Cells(ligne, 3).Resize(nbLignes, 1).NumberFormat = "0.000%"
+    ws.Cells(ligne, 4).Resize(nbLignes, 1).NumberFormat = "0.000000"
+    ws.Cells(ligne, 5).Resize(nbLignes, 1).NumberFormat = "0.000%"
+    ws.Range("A:E").ColumnWidth = 14
+
+    GraphiqueDeuxTitres ws, ws.Cells(ligne, 5).Resize(nbLignes, 1), ws.Cells(ligne, 3).Resize(nbLignes, 1), _
+                        p.Codes(a), p.Codes(b)
+End Sub
+
+' Feuille "Frontiere" : tableau de la frontiere efficiente (N actions) et graphique
+Public Sub EcrireFrontiere(ByRef p As TParametres, ByRef poids() As Double, ByRef rendements() As Double, _
+                           ByRef ecartsTypes() As Double, ByRef efficient() As Boolean, ByRef wMvp() As Double, _
+                           ByRef moy() As Double, ByRef cov() As Double, ByVal nbDomines As Long, _
+                           ByVal nbAleatoires As Long)
+    Dim ws As Worksheet, k As Long, i As Long, nbPoints As Long, sortie() As Variant
+    Dim premiereLigne As Long
+    Const LIGNE_TABLEAU As Long = 8
+
+    Set ws = PreparerFeuille(FEUILLE_FRONTIERE)
+    nbPoints = UBound(rendements)
+    Titre ws, "Frontiere efficiente (" & p.NbTitres & " actions, poids entre 0 et 100 %)"
+
+    ' Portefeuille de variance minimale
+    ws.Range("A3").Value = "Portefeuille de variance minimale"
+    ws.Range("A3").Font.Bold = True
+    ws.Range("A4").Value = "R(pf)"
+    ws.Range("B4").Value = RendementPortefeuille(wMvp, moy)
+    ws.Range("A5").Value = "sigma(pf)"
+    ws.Range("B5").Value = EcartTypePortefeuille(wMvp, cov)
+    ws.Range("B4:B5").NumberFormat = "0.0000%"
+    For i = 1 To p.NbTitres
+        ws.Cells(3, 3 + i).Value = p.Codes(i)
+        ws.Cells(4, 3 + i).Value = wMvp(i)
+    Next i
+    FormaterEntete ws.Cells(3, 4).Resize(1, p.NbTitres)
+    ws.Cells(4, 4).Resize(1, p.NbTitres).NumberFormat = "0.0%"
+
+    ' Tableau de la frontiere
+    ReDim sortie(0 To nbPoints, 1 To 7 + p.NbTitres)
+    sortie(0, 1) = "N"
+    sortie(0, 2) = "Efficient ?"
+    sortie(0, 3) = "R(pf)"
+    sortie(0, 4) = "var(pf)"
+    sortie(0, 5) = "sigma(pf)"
+    sortie(0, 6) = "R(pf) annualise"
+    sortie(0, 7) = "sigma(pf) annualise"
+    For i = 1 To p.NbTitres
+        sortie(0, 7 + i) = "x " & p.Codes(i)
+    Next i
+    For k = 1 To nbPoints
+        sortie(k, 1) = k
+        If efficient(k) Then sortie(k, 2) = "Oui" Else sortie(k, 2) = "Non (domine)"
+        sortie(k, 3) = rendements(k)
+        sortie(k, 4) = ecartsTypes(k) ^ 2
+        sortie(k, 5) = ecartsTypes(k)
+        sortie(k, 6) = rendements(k) * JOURS_PAR_AN
+        sortie(k, 7) = ecartsTypes(k) * Sqr(JOURS_PAR_AN)
+        For i = 1 To p.NbTitres
+            sortie(k, 7 + i) = poids(k, i)
+        Next i
+    Next k
+    ws.Cells(LIGNE_TABLEAU - 1, 1).Value = "Frontiere de variance minimale : pour chaque rendement, le portefeuille le moins risque"
+    ws.Cells(LIGNE_TABLEAU - 1, 1).Font.Bold = True
+    ws.Cells(LIGNE_TABLEAU, 1).Resize(nbPoints + 1, 7 + p.NbTitres).Value = sortie
+    FormaterEntete ws.Cells(LIGNE_TABLEAU, 1).Resize(1, 7 + p.NbTitres)
+    premiereLigne = LIGNE_TABLEAU + 1
+    ws.Cells(premiereLigne, 3).Resize(nbPoints, 1).NumberFormat = "0.0000%"
+    ws.Cells(premiereLigne, 4).Resize(nbPoints, 1).NumberFormat = "0.000000"
+    ws.Cells(premiereLigne, 5).Resize(nbPoints, 1).NumberFormat = "0.0000%"
+    ws.Cells(premiereLigne, 6).Resize(nbPoints, 2).NumberFormat = "0.00%"
+    ws.Cells(premiereLigne, 8).Resize(nbPoints, p.NbTitres).NumberFormat = "0.0%"
+    If nbDomines > 0 Then ws.Cells(premiereLigne, 1).Resize(nbDomines, 7 + p.NbTitres).Font.Color = RGB(128, 128, 128)
+    ws.Columns(1).ColumnWidth = 30
+    ws.Range(ws.Columns(2), ws.Columns(7 + p.NbTitres)).ColumnWidth = 12
+
+    GraphiqueFrontiere ws, premiereLigne, nbPoints, nbDomines, p, nbAleatoires
+End Sub
+
+' Feuille "Aleatoires" : nuage de portefeuilles tires au hasard (pour le graphique)
+Public Sub EcrireAleatoires(ByRef rendements() As Double, ByRef ecartsTypes() As Double)
+    Dim ws As Worksheet, sortie() As Variant, k As Long, nb As Long
+    Set ws = PreparerFeuille(FEUILLE_ALEATOIRES)
+    nb = UBound(rendements)
+    ReDim sortie(0 To nb, 1 To 2)
+    sortie(0, 1) = "sigma(pf)"
+    sortie(0, 2) = "R(pf)"
+    For k = 1 To nb
+        sortie(k, 1) = ecartsTypes(k)
+        sortie(k, 2) = rendements(k)
+    Next k
+    ws.Range("A1").Resize(nb + 1, 2).Value = sortie
+    ws.Range("A2").Resize(nb, 2).NumberFormat = "0.000%"
+    FormaterEntete ws.Range("A1:B1")
+    ws.Columns("A:B").ColumnWidth = 12
+End Sub
+
+' Feuille "Calculateur" : l'utilisateur saisit des poids, Excel calcule R et sigma en direct.
+Public Sub EcrireCalculateur(ByRef p As TParametres)
+    Dim ws As Worksheet, i As Long, j As Long, n As Long
+    Dim plagePoids As String, plageMoy As String, plageH As String, ligneRes As Long
+    Const LIGNE_PREMIER As Long = 6          ' premiere ligne des actions
+    Const COL_MATRICE As Long = 6            ' colonne F : debut de la matrice de covariance
+
+    Set ws = PreparerFeuille(FEUILLE_CALCULATEUR)
+    n = p.NbTitres
+    Titre ws, "Calculateur : rendement et risque d'un portefeuille selon les poids"
+    ws.Range("A2").Value = "Saisissez les poids dans les cases jaunes (total = 100 %). " & _
+                           "Les resultats se mettent a jour automatiquement."
+
+    ws.Cells(LIGNE_PREMIER - 1, 1).Value = "Action"
+    ws.Cells(LIGNE_PREMIER - 1, 2).Value = "Poids x"
+    ws.Cells(LIGNE_PREMIER - 1, 3).Value = "E(R)"
+    ws.Cells(LIGNE_PREMIER - 1, 4).Value = "(Cov . x)"
+    ws.Cells(LIGNE_PREMIER - 3, COL_MATRICE).Value = "Matrice de covariance (issue de la feuille Statistiques)"
+    ws.Cells(LIGNE_PREMIER - 2, COL_MATRICE - 1).Value = "Poids x"
+    plagePoids = ws.Cells(LIGNE_PREMIER, 2).Resize(n, 1).Address
+    For i = 1 To n
+        ws.Cells(LIGNE_PREMIER - 1 + i, 1).Value = p.Codes(i)
+        ws.Cells(LIGNE_PREMIER - 1 + i, 2).Value = 1 / n
+        ws.Cells(LIGNE_PREMIER - 1 + i, 3).Formula = "='" & FEUILLE_STATS & "'!" & _
+            FeuilleExistante(FEUILLE_STATS).Cells(STAT_LIGNE_MOYENNE, i + 1).Address
+        ' poids recopies en ligne pour le produit matriciel
+        ws.Cells(LIGNE_PREMIER - 2, COL_MATRICE - 1 + i).Formula = "=INDEX(" & plagePoids & "," & i & ")"
+        ws.Cells(LIGNE_PREMIER - 1, COL_MATRICE - 1 + i).Value = p.Codes(i)
+        For j = 1 To n
+            ws.Cells(LIGNE_PREMIER - 1 + i, COL_MATRICE - 1 + j).Formula = "='" & FEUILLE_STATS & "'!" & _
+                FeuilleExistante(FEUILLE_STATS).Cells(STAT_LIGNE_COV - 1 + i, j + 1).Address
+        Next j
+        ' (Cov . x)_i = somme_j Cov(i, j) * x_j
+        ws.Cells(LIGNE_PREMIER - 1 + i, 4).Formula = "=SUMPRODUCT(" & _
+            ws.Cells(LIGNE_PREMIER - 1 + i, COL_MATRICE).Resize(1, n).Address & "," & _
+            ws.Cells(LIGNE_PREMIER - 2, COL_MATRICE).Resize(1, n).Address & ")"
+    Next i
+    plageMoy = ws.Cells(LIGNE_PREMIER, 3).Resize(n, 1).Address
+    plageH = ws.Cells(LIGNE_PREMIER, 4).Resize(n, 1).Address
+
+    ligneRes = LIGNE_PREMIER + n + 1
+    ws.Cells(ligneRes, 1).Value = "Somme des poids"
+    ws.Cells(ligneRes, 2).Formula = "=SUM(" & plagePoids & ")"
+    ws.Cells(ligneRes + 1, 1).Value = "Rendement du portefeuille R(pf)"
+    ws.Cells(ligneRes + 1, 2).Formula = "=SUMPRODUCT(" & plagePoids & "," & plageMoy & ")"
+    ws.Cells(ligneRes + 2, 1).Value = "Variance du portefeuille var(pf)"
+    ws.Cells(ligneRes + 2, 2).Formula = "=SUMPRODUCT(" & plagePoids & "," & plageH & ")"
+    ws.Cells(ligneRes + 3, 1).Value = "Ecart-type du portefeuille sigma(pf)"
+    ws.Cells(ligneRes + 3, 2).Formula = "=SQRT(" & ws.Cells(ligneRes + 2, 2).Address & ")"
+    ws.Cells(ligneRes + 4, 1).Value = "R(pf) annualise"
+    ws.Cells(ligneRes + 4, 2).Formula = "=" & ws.Cells(ligneRes + 1, 2).Address & "*" & JOURS_PAR_AN
+    ws.Cells(ligneRes + 5, 1).Value = "sigma(pf) annualise"
+    ws.Cells(ligneRes + 5, 2).Formula = "=" & ws.Cells(ligneRes + 3, 2).Address & "*SQRT(" & JOURS_PAR_AN & ")"
+    ws.Cells(ligneRes + 6, 1).Value = "Controle"
+    ws.Cells(ligneRes + 6, 2).Formula = "=IF(ABS(" & ws.Cells(ligneRes, 2).Address & "-1)>0.0001," & _
+        """Attention : la somme des poids doit faire 100 %""," & _
+        "IF(MIN(" & plagePoids & ")<0,""Attention : poids negatif""," & """OK""))"
+
+    FormaterEntete ws.Cells(LIGNE_PREMIER - 1, 1).Resize(1, 4)
+    FormaterEntete ws.Cells(LIGNE_PREMIER - 1, COL_MATRICE).Resize(1, n)
+    ws.Range(plagePoids).Interior.Color = COULEUR_SAISIE
+    ws.Range(plagePoids).NumberFormat = "0.0%"
+    ws.Cells(LIGNE_PREMIER - 2, COL_MATRICE).Resize(1, n).NumberFormat = "0.0%"
+    ws.Range(plageMoy).NumberFormat = "0.0000%"
+    ws.Range(plageH).NumberFormat = "0.0000000"
+    ws.Cells(LIGNE_PREMIER, COL_MATRICE).Resize(n, n).NumberFormat = "0.000000"
+    ws.Cells(ligneRes, 2).NumberFormat = "0.0%"
+    ws.Cells(ligneRes + 1, 2).NumberFormat = "0.0000%"
+    ws.Cells(ligneRes + 2, 2).NumberFormat = "0.000000"
+    ws.Cells(ligneRes + 3, 2).NumberFormat = "0.0000%"
+    ws.Cells(ligneRes + 4, 2).Resize(2, 1).NumberFormat = "0.00%"
+    ws.Cells(ligneRes, 1).Resize(7, 1).Font.Bold = True
+    ws.Columns(1).ColumnWidth = 36
+    ws.Range(ws.Columns(2), ws.Columns(COL_MATRICE + n)).ColumnWidth = 12
+End Sub
+
+'------------------------------------------------------------------------------
+' Outils de mise en forme
+'------------------------------------------------------------------------------
+
+Private Sub Titre(ByVal ws As Worksheet, ByVal texte As String)
+    With ws.Range("A1")
+        .Value = texte
+        .Font.Bold = True
+        .Font.Size = 14
+        .Font.Color = COULEUR_ENTETE
+    End With
+End Sub
+
+Public Sub FormaterEntete(ByVal plage As Range)
+    With plage
+        .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = COULEUR_ENTETE
+        .HorizontalAlignment = xlCenter
+    End With
+End Sub
+
+' Ecrit la matrice de covariance (ou de correlation) avec les codes en en-tete.
+Private Sub EcrireMatrice(ByVal ws As Worksheet, ByVal ligneEntete As Long, ByRef p As TParametres, _
+                          ByRef cov() As Double, ByVal enCorrelation As Boolean, ByVal formatNombre As String)
+    Dim i As Long, j As Long, n As Long
+    n = p.NbTitres
+    For i = 1 To n
+        ws.Cells(ligneEntete, i + 1).Value = p.Codes(i)
+        ws.Cells(ligneEntete + i, 1).Value = p.Codes(i)
+        For j = 1 To n
+            If enCorrelation Then
+                ws.Cells(ligneEntete + i, j + 1).Value = Correlation(cov, i, j)
+            Else
+                ws.Cells(ligneEntete + i, j + 1).Value = cov(i, j)
+            End If
+        Next j
+    Next i
+    FormaterEntete ws.Cells(ligneEntete, 1).Resize(1, n + 1)
+    ws.Cells(ligneEntete + 1, 1).Resize(n, 1).Font.Bold = True
+    ws.Cells(ligneEntete + 1, 2).Resize(n, n).NumberFormat = formatNombre
+End Sub
+
+' Reference (avec le nom de feuille) de la colonne des rendements de l'action i.
+Private Function PlageRendements(ByVal i As Long, ByVal nbObs As Long) As String
+    PlageRendements = "'" & FEUILLE_RENDEMENTS & "'!" & _
+        FeuilleExistante(FEUILLE_RENDEMENTS).Cells(2, i + 1).Resize(nbObs, 1).Address
+End Function
+
+'##############################################################################
+' modGraphiques
+'##############################################################################
+' Graphique de la feuille "Deux titres" (comme dans la video)
+Public Sub GraphiqueDeuxTitres(ByVal ws As Worksheet, ByVal plageRisque As Range, ByVal plageRendement As Range, _
+                               ByVal codeA As String, ByVal codeB As String)
+    Dim ch As Chart
+    On Error GoTo Echec
+    Set ch = NouveauGraphique(ws, ws.Range("G3").Left, ws.Range("G3").Top, 480, 320)
+    AjouterSerie ch, "Portefeuilles " & codeA & " / " & codeB, plageRisque, plageRendement, xlXYScatterLines
+    MettreEnForme ch, "Frontiere efficiente : " & codeA & " et " & codeB, False
+    Exit Sub
+Echec:
+    NoterEchec ws.Name, Err.Description
+End Sub
+
+' Graphique de la feuille "Frontiere" : nuage aleatoire, frontiere, actions, variance minimale
+Public Sub GraphiqueFrontiere(ByVal ws As Worksheet, ByVal premiereLigne As Long, ByVal nbPoints As Long, _
+                              ByVal nbDomines As Long, ByRef p As TParametres, ByVal nbAleatoires As Long)
+    Dim ch As Chart, s As Series, wsStats As Worksheet, wsAlea As Worksheet
+    Dim ligneMvp As Long, i As Long
+
+    On Error GoTo Echec
+    Set ch = NouveauGraphique(ws, ws.Cells(3, 9 + p.NbTitres).Left, ws.Range("A3").Top, 620, 400)
+    ligneMvp = premiereLigne + nbDomines           ' le premier point efficient est la variance minimale
+
+    ' 1) Nuage de portefeuilles aleatoires (en fond)
+    If nbAleatoires > 0 Then
+        Set wsAlea = FeuilleExistante(FEUILLE_ALEATOIRES)
+        Set s = AjouterSerie(ch, "Portefeuilles possibles (aleatoires)", wsAlea.Range("A2").Resize(nbAleatoires, 1), _
+                             wsAlea.Range("B2").Resize(nbAleatoires, 1), xlXYScatter)
+        StyleMarqueur s, RGB(200, 200, 200), 2
+    End If
+
+    ' 2) Partie dominee (en pointilles), jusqu'au portefeuille de variance minimale
+    If nbDomines > 0 Then
+        Set s = AjouterSerie(ch, "Portefeuilles domines", ws.Cells(premiereLigne, 5).Resize(nbDomines + 1, 1), _
+                             ws.Cells(premiereLigne, 3).Resize(nbDomines + 1, 1), xlXYScatterLines)
+        StyleLigne s, RGB(150, 150, 150), True
+    End If
+
+    ' 3) Frontiere efficiente
+    Set s = AjouterSerie(ch, "Frontiere efficiente", ws.Cells(ligneMvp, 5).Resize(nbPoints - nbDomines, 1), _
+                         ws.Cells(ligneMvp, 3).Resize(nbPoints - nbDomines, 1), xlXYScatterLines)
+    StyleLigne s, RGB(0, 70, 160), False
+
+    ' 4) Les actions seules, avec leur code
+    Set wsStats = FeuilleExistante(FEUILLE_STATS)
+    Set s = AjouterSerie(ch, "Actions", wsStats.Cells(STAT_LIGNE_ECART_TYPE, 2).Resize(1, p.NbTitres), _
+                         wsStats.Cells(STAT_LIGNE_MOYENNE, 2).Resize(1, p.NbTitres), xlXYScatter)
+    StyleMarqueur s, RGB(220, 90, 0), 7
+    EtiqueterPoints s, p.Codes
+
+    ' 5) Portefeuille de variance minimale
+    Set s = AjouterSerie(ch, "Variance minimale", ws.Cells(ligneMvp, 5), ws.Cells(ligneMvp, 3), xlXYScatter)
+    StyleMarqueur s, RGB(0, 150, 60), 9
+
+    MettreEnForme ch, "Frontiere efficiente (" & p.NbTitres & " actions)", True
+    Exit Sub
+Echec:
+    NoterEchec ws.Name, Err.Description
+End Sub
+
+'------------------------------------------------------------------------------
+' Outils
+'------------------------------------------------------------------------------
+
+Private Sub NoterEchec(ByVal nomFeuille As String, ByVal description As String)
+    AvertissementGraphique = AvertissementGraphique & vbLf & "- feuille " & nomFeuille & " : " & description
+End Sub
+
+' Affiche le code de chaque action a cote de son point (purement decoratif).
+Private Sub EtiqueterPoints(ByVal s As Series, ByRef codes() As String)
+    Dim i As Long
+    On Error Resume Next
+    For i = LBound(codes) To UBound(codes)
+        s.Points(i).HasDataLabel = True
+        s.Points(i).DataLabel.Text = codes(i)
+    Next i
+    On Error GoTo 0
+End Sub
+
+Private Function NouveauGraphique(ByVal ws As Worksheet, ByVal gauche As Double, ByVal haut As Double, _
+                                  ByVal largeur As Double, ByVal hauteur As Double) As Chart
+    Dim co As ChartObject
+    Set co = ws.ChartObjects.Add(gauche, haut, largeur, hauteur)
+    co.Chart.ChartType = xlXYScatter
+    Do While co.Chart.SeriesCollection.Count > 0   ' Excel ajoute parfois des series automatiquement
+        co.Chart.SeriesCollection(1).Delete
+    Loop
+    Set NouveauGraphique = co.Chart
+End Function
+
+Private Function AjouterSerie(ByVal ch As Chart, ByVal nom As String, ByVal x As Range, ByVal y As Range, _
+                              ByVal typeSerie As XlChartType) As Series
+    Dim s As Series
+    Set s = ch.SeriesCollection.NewSeries
+    s.Name = nom
+    s.XValues = x
+    s.Values = y
+    s.ChartType = typeSerie
+    Set AjouterSerie = s
+End Function
+
+Private Sub MettreEnForme(ByVal ch As Chart, ByVal titreGraphique As String, ByVal avecLegende As Boolean)
+    On Error Resume Next                      ' mise en forme : ne doit jamais bloquer la macro
+    ch.HasTitle = True
+    ch.ChartTitle.Text = titreGraphique
+    ch.HasLegend = avecLegende
+    If avecLegende Then ch.Legend.Position = xlLegendPositionBottom
+    With ch.Axes(xlCategory)
+        .HasTitle = True
+        .AxisTitle.Text = "Risque : ecart-type journalier sigma(pf)"
+        .TickLabels.NumberFormat = "0.0%"
+        .HasMajorGridlines = False
+    End With
+    With ch.Axes(xlValue)
+        .HasTitle = True
+        .AxisTitle.Text = "Rendement journalier moyen R(pf)"
+        .TickLabels.NumberFormat = "0.00%"
+    End With
+    On Error GoTo 0
+End Sub
+
+Private Sub StyleMarqueur(ByVal s As Series, ByVal couleur As Long, ByVal taille As Long)
+    On Error Resume Next
+    s.MarkerStyle = xlMarkerStyleCircle
+    s.MarkerSize = taille
+    s.MarkerBackgroundColor = couleur
+    s.MarkerForegroundColor = couleur
+    On Error GoTo 0
+End Sub
+
+Private Sub StyleLigne(ByVal s As Series, ByVal couleur As Long, ByVal pointilles As Boolean)
+    On Error Resume Next
+    s.Format.Line.ForeColor.RGB = couleur
+    s.Format.Line.Weight = 2.25
+    If pointilles Then s.Format.Line.DashStyle = msoLineDash
+    s.MarkerStyle = xlMarkerStyleCircle
+    s.MarkerSize = 4
+    s.MarkerBackgroundColor = couleur
+    s.MarkerForegroundColor = couleur
+    On Error GoTo 0
+End Sub

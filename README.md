@@ -25,6 +25,7 @@ Les formules suivent le cours *Utiliser la théorie du portefeuille* :
 |---|---|
 | `Frontiere_Efficiente.xlsx` | Classeur modèle : feuilles *Mode d'emploi* et *Parametres* |
 | `vba/*.bas` | Les 8 modules VBA à importer dans le classeur |
+| `CODE_COMPLET_a_copier.txt` | Les mêmes 8 modules réunis en un seul texte, à copier-coller si l'import ne marche pas |
 | `MC.csv`, `TTE.csv`, `SAN.csv`, `BNP.csv`, `AI.csv` | Cours journaliers 2025 (Yahoo Finance) : Date, Close, AdjClose, Dividend |
 | `Donnees_2_titres_BNP_AI.xlsx` | Données prêtes à l'emploi pour la version manuelle (étape 2) |
 
@@ -40,6 +41,8 @@ Actions retenues : LVMH (MC), TotalEnergies (TTE), Sanofi (SAN), BNP Paribas (BN
 6. Revenez dans Excel : **Outils > Macro > Macros…**, choisissez **`CreerBoutons`** puis **Exécuter**. Les boutons *Lancer l'analyse* et *Effacer les résultats* apparaissent sur la feuille *Parametres*.
 7. Enregistrez (⌘S).
 
+> **Si l'import des fichiers .bas ne marche pas**, utilisez le copier-coller. Dans l'éditeur VBA, faites **Insertion > Module**, puis collez **tout** le contenu de `livrable/CODE_COMPLET_a_copier.txt`. Ce fichier contient les 8 modules réunis en un seul, et le résultat est identique. Passez ensuite à l'étape 6.
+>
 > Si Excel bloque les macros à l'ouverture, cliquez sur **Activer les macros**. Vous pouvez aussi régler ce comportement dans **Excel > Préférences > Sécurité**.
 >
 > Pour afficher l'onglet *Développeur* : **Excel > Préférences > Ruban et barre d'outils**, puis cochez *Développeur*.

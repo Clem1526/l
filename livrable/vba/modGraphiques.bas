@@ -77,7 +77,7 @@ Private Sub NoterEchec(ByVal nomFeuille As String, ByVal description As String)
 End Sub
 
 ' Affiche le code de chaque action a cote de son point (purement decoratif).
-Private Sub EtiqueterPoints(ByVal s As Series, ByRef codes() As String)
+Private Sub EtiqueterPoints(ByVal s As Series, ByVal codes As Variant)
     Dim i As Long
     On Error Resume Next
     For i = LBound(codes) To UBound(codes)

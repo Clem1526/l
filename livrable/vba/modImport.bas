@@ -122,7 +122,7 @@ End Sub
 ' (colonne Dividend) ou un cours ajuste qui les inclut deja.
 Public Sub AnalyserTexteCours(ByVal contenu As String, ByVal libelle As String, ByRef dates() As Date, _
                               ByRef cours() As Double, ByRef dividendes() As Double, ByRef aDesDividendes As Boolean)
-    Dim sep As String, lignes() As String, champs() As String
+    Dim sep As String, lignes() As String, champs() As String, entete() As String
     Dim colDate As Long, colCours As Long, colDiv As Long, colMax As Long, ligneEntete As Long
     Dim i As Long, n As Long
     Dim d As Date, prix As Double, dv As Double
@@ -148,7 +148,8 @@ Public Sub AnalyserTexteCours(ByVal contenu As String, ByVal libelle As String, 
     End If
 
     If InStr(lignes(ligneEntete), ";") > 0 Then sep = ";" Else sep = ","
-    TrouverColonnes Split(lignes(ligneEntete), sep), libelle, colDate, colCours, colDiv, aDesDividendes
+    entete = Split(lignes(ligneEntete), sep)
+    TrouverColonnes entete, libelle, colDate, colCours, colDiv, aDesDividendes
     colMax = colDate
     If colCours > colMax Then colMax = colCours
     If colDiv > colMax Then colMax = colDiv

@@ -1,4 +1,4 @@
-name: Sonder Euronext
+name: Recuperer les donnees Euronext
 
 on:
   workflow_dispatch:
@@ -7,13 +7,19 @@ on:
       - "scripts/sonder_euronext.sh"
       - ".github/workflows/sonder-euronext.yml"
 
+permissions:
+  contents: write
+
 jobs:
-  sonder:
+  euronext:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/sonder_euronext.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sonde-euronext
-          path: sonde/
+      - name: Committer les CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add donnees/euronext_2025/
+          git diff --cached --quiet || git commit -m "Donnees : export CSV Euronext 2025 des 5 actions"
+          git push

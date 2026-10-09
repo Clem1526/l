@@ -1,5 +1,5 @@
 Option Explicit
-' Frontiere efficiente - code complet (les 8 modules reunis en un seul)
+' Frontiere efficiente - code complet (les 9 modules reunis en un seul)
 
 '==============================================================================
 ' Module d'origine : modConfig

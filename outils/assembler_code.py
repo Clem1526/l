@@ -9,8 +9,11 @@ import re
 import sys
 
 dossier, sortie = sys.argv[1], sys.argv[2]
-ordre = ["modConfig", "modMain", "modEuronext", "modImport", "modStats", "modPortefeuille",
+ordre_complet = ["modConfig", "modMain", "modEuronext", "modImport", "modStats", "modPortefeuille",
          "modOptimisation", "modSorties", "modGraphiques"]
+# Version simplifiée (Module1_..., Module2_...) : ordre alphabétique ; sinon ordre ci-dessus
+simples = sorted(os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(dossier, "Module*.bas")))
+ordre = simples if simples else ordre_complet
 declarations, procedures = [], []
 for nom in ordre:
     lignes = open(os.path.join(dossier, nom + ".bas"), encoding="ascii").read().replace("\r", "").split("\n")
@@ -22,7 +25,7 @@ for nom in ordre:
     entete = "\n".join(lignes[:debut]).strip("\n")
     declarations.append(f"'{'=' * 78}\n' Module d'origine : {nom}\n{entete}\n")
     procedures.append(f"'{'#' * 78}\n' {nom}\n'{'#' * 78}\n" + "\n".join(lignes[debut:]).strip("\n") + "\n")
-texte = ("Option Explicit\n' Frontiere efficiente - code complet (les 8 modules reunis en un seul)\n\n"
+texte = (f"Option Explicit\n' Frontiere efficiente - code complet (les {len(ordre)} modules reunis en un seul)\n\n"
          + "\n".join(declarations) + "\n" + "\n".join(procedures))
 open(sortie, "w", encoding="ascii", newline="\r\n").write(texte)
 print(sortie, len(texte.splitlines()), "lignes")

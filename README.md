@@ -1,5 +1,7 @@
 # Projet VBA : frontière efficiente (5 actions du CAC 40, année 2025)
 
+> **Nouveau : une version simplifiée et pédagogique** (4 modules commentés, résultats en couleurs) se trouve dans [`version_simple/`](version_simple/). C'est la version recommandée pour le rendu. Le dossier `livrable/` contient la version complète, avec une optimisation exacte.
+
 Classeur Excel + macro VBA qui :
 1. **télécharge lui-même les cours journaliers de 2025 sur Euronext** (live.euronext.com), ou lit des fichiers CSV en secours ;
 2. calcule pour chaque action le rendement journalier moyen, la variance et l'écart-type ;

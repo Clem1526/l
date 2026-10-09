@@ -54,7 +54,7 @@ try:
         if dossier_euronext:
             code = code.replace("Public Function TelechargerTexte(", "Public Function TelechargerTexte_Reel(")
         code = "Option VBASupport 1\n" + code
-        if nom == "modMain":
+        if nom in ("modMain", "Module1_Lancement"):
             code += f'''
 Public Sub TestLog(ByVal a As Variant, Optional ByVal b As Variant, Optional ByVal c As Variant)
     Dim f As Integer
@@ -64,7 +64,7 @@ Public Sub TestLog(ByVal a As Variant, Optional ByVal b As Variant, Optional ByV
     Close #f
 End Sub
 '''
-        if dossier_euronext and nom == "modMain":
+        if dossier_euronext and nom in ("modMain", "Module1_Lancement"):
             code += f'''
 Public Function TelechargerTexte(ByVal adresse As String) As String
     Dim isin As String, f As Integer, chemin As String
@@ -85,7 +85,8 @@ End Function
             lib.removeByName(nom)
         lib.insertByName(nom, code)
     sp = doc.getScriptProvider()
-    script = sp.getScript(f"vnd.sun.star.script:Standard.modMain.{macro}?language=Basic&location=document")
+    module_principal = os.environ.get("TEST_MODULE", "modMain")
+    script = sp.getScript(f"vnd.sun.star.script:Standard.{module_principal}.{macro}?language=Basic&location=document")
     t0 = time.time()
     try:
         script.invoke((), (), ())

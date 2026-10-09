@@ -1,40 +1,57 @@
 Attribute VB_Name = "modImport"
 Option Explicit
 '==============================================================================
-' modImport : lecture des fichiers CSV de cours et alignement des dates
+' modImport : recuperation des cours (Euronext ou fichiers CSV), dividendes,
+'             alignement des dates
 '
-' Formats acceptes (un fichier par action, nomme CODE.csv) :
-'   - Date,Close,AdjClose,Dividend   (fichiers fournis, issus de Yahoo Finance)
+' Formats acceptes (Euronext ou un fichier par action, nomme CODE.csv) :
+'   - export Euronext : 3 lignes d'introduction puis Date;Open;High;Low;Last;Close;...
+'   - Date,Close,AdjClose,Dividend   (fichiers issus de Yahoo Finance)
 '   - Date,Open,High,Low,Close,Adj Close,Volume   (export Yahoo Finance)
 '   - Date;Close   (export Google Sheets en francais, virgule decimale)
 ' Les dates peuvent etre AAAA-MM-JJ ou JJ/MM/AAAA, en ordre croissant ou decroissant.
+' Si le fichier n'a pas de colonne de dividendes, ceux de la feuille Dividendes sont ajoutes.
 '==============================================================================
 
-' Lit les fichiers de toutes les actions retenues et renvoie des tableaux
+' Recupere les cours de toutes les actions retenues et renvoie des tableaux
 ' alignes sur les dates communes a toutes les actions :
 '   dates(1 To T), prix(1 To T, 1 To N), dividendes(1 To T, 1 To N)
 Public Sub ImporterDonnees(ByRef p As TParametres, ByRef dates() As Date, ByRef prix() As Double, _
                            ByRef dividendes() As Double, ByRef nbDatesIgnorees As Long)
     Dim i As Long, t As Long, k As Long, nbDates As Long
-    Dim chemins() As String
+    Dim chemins() As String, texte As String, libelle As String, aDesDividendes As Boolean
     Dim datesTitres() As Variant, prixTitres() As Variant, divTitres() As Variant
     Dim d() As Date, c() As Double, dv() As Double
     Dim communes() As Date, autres() As Date
+    Dim codesDiv() As String, datesDiv() As Date, montantsDiv() As Double, nbDiv As Long
 
     ReDim chemins(1 To p.NbTitres)
     ReDim datesTitres(1 To p.NbTitres)
     ReDim prixTitres(1 To p.NbTitres)
     ReDim divTitres(1 To p.NbTitres)
 
-    For i = 1 To p.NbTitres
-        chemins(i) = CheminFichier(p.Dossier, p.Codes(i))
-    Next i
-    DemanderAccesFichiers chemins
+    If p.Source = SOURCE_CSV Then
+        For i = 1 To p.NbTitres
+            chemins(i) = CheminFichier(p.Dossier, p.Codes(i))
+        Next i
+        DemanderAccesFichiers chemins
+    End If
+    LireTableDividendes codesDiv, datesDiv, montantsDiv, nbDiv
 
-    ' 1) Lecture de chaque fichier
+    ' 1) Recuperation et lecture des cours de chaque action
     For i = 1 To p.NbTitres
-        Application.StatusBar = "Lecture du fichier " & p.Codes(i) & ".csv ..."
-        LireFichierCours chemins(i), d, c, dv
+        If p.Source = SOURCE_EURONEXT Then
+            Application.StatusBar = "Telechargement des cours de " & p.Codes(i) & " sur Euronext (" & i & "/" & p.NbTitres & ")..."
+            texte = TelechargerCoursEuronext(p.Codes(i), p.Isins(i), p.Marches(i), p.DateDebut, p.DateFin)
+            libelle = "Euronext, action " & p.Codes(i) & " (ISIN " & p.Isins(i) & ")"
+        Else
+            Application.StatusBar = "Lecture du fichier " & p.Codes(i) & ".csv ..."
+            texte = LireTexte(chemins(i))
+            libelle = chemins(i)
+        End If
+        AnalyserTexteCours texte, libelle, d, c, dv, aDesDividendes
+        GarderPeriode d, c, dv, p.DateDebut, p.DateFin, libelle
+        If Not aDesDividendes Then AjouterDividendes p.Codes(i), d, dv, codesDiv, datesDiv, montantsDiv, nbDiv
         datesTitres(i) = CopieDates(d)       ' copies explicites : chaque action garde ses propres tableaux
         prixTitres(i) = CopieNombres(c)
         divTitres(i) = CopieNombres(dv)
@@ -100,26 +117,38 @@ Private Sub DemanderAccesFichiers(ByRef chemins() As String)
 #End If
 End Sub
 
-' Lit un fichier CSV et renvoie ses dates, cours de cloture et dividendes (ordre croissant).
-Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
-                            ByRef cours() As Double, ByRef dividendes() As Double)
-    Dim contenu As String, sep As String
-    Dim lignes() As String, champs() As String
-    Dim colDate As Long, colCours As Long, colDiv As Long, colMax As Long
+' Analyse le contenu d'un fichier de cours et renvoie ses dates, cours de cloture
+' et dividendes (ordre croissant). aDesDividendes = le fichier contient des dividendes
+' (colonne Dividend) ou un cours ajuste qui les inclut deja.
+Public Sub AnalyserTexteCours(ByVal contenu As String, ByVal libelle As String, ByRef dates() As Date, _
+                              ByRef cours() As Double, ByRef dividendes() As Double, ByRef aDesDividendes As Boolean)
+    Dim sep As String, lignes() As String, champs() As String
+    Dim colDate As Long, colCours As Long, colDiv As Long, colMax As Long, ligneEntete As Long
     Dim i As Long, n As Long
     Dim d As Date, prix As Double, dv As Double
     Dim okDate As Boolean, okPrix As Boolean, okDiv As Boolean
 
-    contenu = LireTexte(chemin)
     If Left$(contenu, 3) = Chr$(239) & Chr$(187) & Chr$(191) Then contenu = Mid$(contenu, 4) ' BOM UTF-8
     contenu = Replace(contenu, vbCr, "")    ' fins de ligne Windows / Mac / Unix
     lignes = Split(contenu, vbLf)
-    If UBound(lignes) < 3 Then
-        ErreurUtilisateur "Le fichier suivant est vide ou trop court :" & vbLf & chemin
+
+    ' La ligne d'en-tete est la premiere qui contient "date" et un nom de colonne de cours
+    ligneEntete = -1
+    For i = 0 To UBound(lignes)
+        If i > 20 Then Exit For
+        If InStr(LCase$(lignes(i)), "date") > 0 And (InStr(LCase$(lignes(i)), "close") > 0 _
+           Or InStr(LCase$(lignes(i)), "clot") > 0 Or InStr(LCase$(lignes(i)), "adj") > 0) Then
+            ligneEntete = i
+            Exit For
+        End If
+    Next i
+    If ligneEntete < 0 Or UBound(lignes) < ligneEntete + 3 Then
+        ErreurUtilisateur "Donnees vides ou en-tete non reconnu :" & vbLf & libelle & vbLf & _
+                          "La ligne d'en-tete doit contenir au moins les colonnes 'Date' et 'Close'."
     End If
 
-    If InStr(lignes(0), ";") > 0 Then sep = ";" Else sep = ","
-    TrouverColonnes Split(lignes(0), sep), chemin, colDate, colCours, colDiv
+    If InStr(lignes(ligneEntete), ";") > 0 Then sep = ";" Else sep = ","
+    TrouverColonnes Split(lignes(ligneEntete), sep), libelle, colDate, colCours, colDiv, aDesDividendes
     colMax = colDate
     If colCours > colMax Then colMax = colCours
     If colDiv > colMax Then colMax = colDiv
@@ -127,7 +156,7 @@ Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
     ReDim dates(1 To UBound(lignes))
     ReDim cours(1 To UBound(lignes))
     ReDim dividendes(1 To UBound(lignes))
-    For i = 1 To UBound(lignes)
+    For i = ligneEntete + 1 To UBound(lignes)
         If Len(Trim$(lignes(i))) > 0 Then
             champs = Split(lignes(i), sep)
             If UBound(champs) >= colMax Then
@@ -141,7 +170,7 @@ Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
                 ' Les lignes sans cours (ex. "null") sont ignorees
                 If okDate And okPrix Then
                     If prix <= 0 Then
-                        ErreurUtilisateur "Cours nul ou negatif a la ligne " & (i + 1) & " du fichier :" & vbLf & chemin
+                        ErreurUtilisateur "Cours nul ou negatif a la ligne " & (i + 1) & " :" & vbLf & libelle
                     End If
                     n = n + 1
                     dates(n) = d
@@ -153,20 +182,85 @@ Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
     Next i
 
     If n < 3 Then
-        ErreurUtilisateur "Aucune donnee exploitable dans le fichier :" & vbLf & chemin & vbLf & _
+        ErreurUtilisateur "Aucune donnee exploitable :" & vbLf & libelle & vbLf & _
                           "Format attendu : une colonne Date et une colonne Close."
     End If
     ReDim Preserve dates(1 To n)
     ReDim Preserve cours(1 To n)
     ReDim Preserve dividendes(1 To n)
 
-    If dates(1) > dates(n) Then InverserOrdre dates, cours, dividendes   ' fichier du plus recent au plus ancien
+    If dates(1) > dates(n) Then InverserOrdre dates, cours, dividendes   ' du plus recent au plus ancien
     For i = 2 To n
         If dates(i) <= dates(i - 1) Then
-            ErreurUtilisateur "Dates non triees ou en double (" & Format$(dates(i), "dd/mm/yyyy") & _
-                              ") dans le fichier :" & vbLf & chemin
+            ErreurUtilisateur "Dates non triees ou en double (" & Format$(dates(i), "dd/mm/yyyy") & ") :" & vbLf & libelle
         End If
     Next i
+End Sub
+
+' Ne garde que les cotations comprises entre debut et fin (inclus).
+Private Sub GarderPeriode(ByRef dates() As Date, ByRef cours() As Double, ByRef dividendes() As Double, _
+                          ByVal debut As Date, ByVal fin As Date, ByVal libelle As String)
+    Dim i As Long, n As Long
+    For i = 1 To UBound(dates)
+        If dates(i) >= debut And dates(i) <= fin Then
+            n = n + 1
+            dates(n) = dates(i)
+            cours(n) = cours(i)
+            dividendes(n) = dividendes(i)
+        End If
+    Next i
+    If n < 3 Then
+        ErreurUtilisateur "Moins de 3 cotations entre le " & Format$(debut, "dd/mm/yyyy") & " et le " & _
+                          Format$(fin, "dd/mm/yyyy") & " :" & vbLf & libelle & vbLf & _
+                          "Verifiez la periode choisie dans la feuille Parametres."
+    End If
+    ReDim Preserve dates(1 To n)
+    ReDim Preserve cours(1 To n)
+    ReDim Preserve dividendes(1 To n)
+End Sub
+
+' Lit la feuille Dividendes (code, date de detachement, montant par action).
+Private Sub LireTableDividendes(ByRef codes() As String, ByRef datesDiv() As Date, _
+                                ByRef montants() As Double, ByRef nb As Long)
+    Dim ws As Worksheet, ligne As Long, code As String
+    nb = 0
+    ReDim codes(1 To 1): ReDim datesDiv(1 To 1): ReDim montants(1 To 1)
+    Set ws = FeuilleExistante(FEUILLE_DIVIDENDES)
+    If ws Is Nothing Then Exit Sub
+    ligne = LIGNE_PREMIER_DIVIDENDE
+    Do While Trim$(CStr(ws.Cells(ligne, 1).Value)) <> ""
+        code = Trim$(CStr(ws.Cells(ligne, 1).Value))
+        If Not IsDate(ws.Cells(ligne, 2).Value) Then
+            ErreurUtilisateur "Feuille Dividendes, cellule " & ws.Cells(ligne, 2).Address(False, False) & _
+                              " : saisissez la date de detachement (ex. 24/04/2025)."
+        End If
+        If IsEmpty(ws.Cells(ligne, 3).Value) Or Not IsNumeric(ws.Cells(ligne, 3).Value) Then
+            ErreurUtilisateur "Feuille Dividendes, cellule " & ws.Cells(ligne, 3).Address(False, False) & _
+                              " : saisissez le montant du dividende par action (ex. 7,5)."
+        End If
+        nb = nb + 1
+        ReDim Preserve codes(1 To nb): ReDim Preserve datesDiv(1 To nb): ReDim Preserve montants(1 To nb)
+        codes(nb) = UCase$(code)
+        datesDiv(nb) = CDate(ws.Cells(ligne, 2).Value)
+        montants(nb) = CDbl(ws.Cells(ligne, 3).Value)
+        ligne = ligne + 1
+    Loop
+End Sub
+
+' Ajoute les dividendes d'une action au jour de detachement (ou au premier jour de cotation suivant).
+Private Sub AjouterDividendes(ByVal code As String, ByRef dates() As Date, ByRef dividendes() As Double, _
+                              ByRef codes() As String, ByRef datesDiv() As Date, ByRef montants() As Double, _
+                              ByVal nb As Long)
+    Dim k As Long, t As Long
+    For k = 1 To nb
+        If codes(k) = UCase$(code) And datesDiv(k) > dates(1) And datesDiv(k) <= dates(UBound(dates)) Then
+            t = 2
+            Do While dates(t) < datesDiv(k)
+                t = t + 1
+            Loop
+            dividendes(t) = dividendes(t) + montants(k)
+        End If
+    Next k
 End Sub
 
 ' Lit tout le contenu d'un fichier texte.
@@ -189,9 +283,9 @@ End Function
 
 ' Repere les colonnes Date, cours de cloture et dividende dans la ligne d'en-tete.
 ' Priorite au cours "Close" + colonne "Dividend" (formule du cours) ; a defaut, cours ajuste ;
-' a defaut, cours "Close" seul (dividendes ignores).
-Private Sub TrouverColonnes(ByRef entete() As String, ByVal chemin As String, ByRef colDate As Long, _
-                            ByRef colCours As Long, ByRef colDiv As Long)
+' a defaut, cours "Close" seul (dividendes pris dans la feuille Dividendes).
+Private Sub TrouverColonnes(ByRef entete() As String, ByVal libelle As String, ByRef colDate As Long, _
+                            ByRef colCours As Long, ByRef colDiv As Long, ByRef aDesDividendes As Boolean)
     Dim i As Long, nom As String, colAjuste As Long
     colDate = -1: colCours = -1: colDiv = -1: colAjuste = -1
     For i = 0 To UBound(entete)
@@ -210,9 +304,12 @@ Private Sub TrouverColonnes(ByRef entete() As String, ByVal chemin As String, By
     If colAjuste >= 0 And (colCours < 0 Or colDiv < 0) Then
         colCours = colAjuste
         colDiv = -1
+        aDesDividendes = True       ' deja inclus dans le cours ajuste
+    Else
+        aDesDividendes = (colDiv >= 0)
     End If
     If colDate < 0 Or colCours < 0 Then
-        ErreurUtilisateur "En-tete non reconnu dans le fichier :" & vbLf & chemin & vbLf & _
+        ErreurUtilisateur "En-tete non reconnu :" & vbLf & libelle & vbLf & _
                           "La premiere ligne doit contenir au moins les colonnes 'Date' et 'Close'."
     End If
 End Sub

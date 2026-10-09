@@ -3,7 +3,7 @@ Option Explicit
 '==============================================================================
 ' modMain : macros lancees par les boutons de la feuille Parametres
 '
-'   LancerAnalyse    : lit les fichiers CSV, calcule tout et cree les feuilles
+'   LancerAnalyse    : recupere les cours (Euronext ou CSV), calcule tout et cree les feuilles
 '   EffacerResultats : supprime les feuilles de resultats
 '   CreerBoutons     : (a lancer une fois) ajoute les boutons sur Parametres
 '==============================================================================
@@ -59,6 +59,7 @@ Public Sub LancerAnalyse()
     FeuilleExistante(FEUILLE_FRONTIERE).Activate
 
     message = "Analyse terminee en " & Format$(Timer - debut, "0.0") & " s." & vbLf & vbLf & _
+              "Source des cours : " & IIf(p.Source = SOURCE_EURONEXT, "Euronext (telechargement)", "fichiers CSV") & vbLf & _
               p.NbTitres & " actions, " & UBound(rend, 1) & " rendements journaliers" & vbLf & _
               "du " & Format$(dates(1), "dd/mm/yyyy") & " au " & Format$(dates(UBound(dates)), "dd/mm/yyyy") & "." & vbLf & vbLf & _
               "Portefeuille de variance minimale :" & vbLf & _
@@ -85,11 +86,11 @@ GestionErreur:
     End If
 End Sub
 
-' Supprime toutes les feuilles de resultats (les parametres sont conserves).
+'' Supprime toutes les feuilles de resultats (les parametres et les dividendes sont conserves).
 Public Sub EffacerResultats()
     Dim noms As Variant, i As Long
     If MsgBox("Supprimer toutes les feuilles de resultats ?" & vbLf & _
-              "(Les feuilles Parametres et Mode d'emploi sont conservees.)", _
+              "(Les feuilles Mode d'emploi, Parametres et Dividendes sont conservees.)", _
               vbQuestion + vbYesNo, "Frontiere efficiente") = vbNo Then Exit Sub
     noms = Array(FEUILLE_COURS, FEUILLE_RENDEMENTS, FEUILLE_STATS, FEUILLE_DEUX_TITRES, _
                  FEUILLE_FRONTIERE, FEUILLE_ALEATOIRES, FEUILLE_CALCULATEUR)
@@ -110,8 +111,8 @@ Public Sub CreerBoutons()
     End If
     SupprimerBouton ws, "btnLancer"
     SupprimerBouton ws, "btnEffacer"
-    AjouterBouton ws, "btnLancer", "Lancer l'analyse", "LancerAnalyse", ws.Range("F4")
-    AjouterBouton ws, "btnEffacer", "Effacer les resultats", "EffacerResultats", ws.Range("F7")
+    AjouterBouton ws, "btnLancer", "Lancer l'analyse", "LancerAnalyse", ws.Range("H4")
+    AjouterBouton ws, "btnEffacer", "Effacer les resultats", "EffacerResultats", ws.Range("H7")
     MsgBox "Boutons crees sur la feuille " & FEUILLE_PARAMETRES & ".", vbInformation
 End Sub
 

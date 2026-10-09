@@ -1,7 +1,7 @@
 # Projet VBA : frontière efficiente (5 actions du CAC 40, année 2025)
 
 Classeur Excel + macro VBA qui :
-1. lit les cours journaliers de 2025 (fichiers CSV) ;
+1. **télécharge lui-même les cours journaliers de 2025 sur Euronext** (live.euronext.com), ou lit des fichiers CSV en secours ;
 2. calcule pour chaque action le rendement journalier moyen, la variance et l'écart-type ;
 3. calcule la matrice de covariance (et les corrélations) ;
 4. donne le rendement et l'écart-type d'un portefeuille selon les poids ;
@@ -11,7 +11,7 @@ Les formules suivent le cours *Utiliser la théorie du portefeuille* :
 
 | Indicateur | Formule |
 |---|---|
-| Rendement journalier | R(t) = (D(t) + P(t) − P(t−1)) / P(t−1), où D(t) est le dividende détaché ce jour-là |
+| Rendement journalier | R(t) = (D(t) + P(t) − P(t−1)) / P(t−1), avec les cours réellement cotés sur Euronext et D(t) le dividende détaché ce jour-là (feuille *Dividendes*) |
 | Moyenne | moyenne arithmétique |
 | Variance, écart-type, covariance | **divisés par n** (fonctions `VAR.P.N`, `ECARTYPE.PEARSON` et `COVARIANCE.PEARSON` d'Excel) |
 | Portefeuille | R(pf) = Σ xᵢ·E(Rᵢ) et var(pf) = Σᵢ Σⱼ xᵢ·xⱼ·Cov(i, j) |
@@ -23,35 +23,46 @@ Les formules suivent le cours *Utiliser la théorie du portefeuille* :
 
 | Fichier | Rôle |
 |---|---|
-| `Frontiere_Efficiente.xlsx` | Classeur modèle : feuilles *Mode d'emploi* et *Parametres* |
-| `vba/*.bas` | Les 8 modules VBA à importer dans le classeur |
-| `CODE_COMPLET_a_copier.txt` | Les mêmes 8 modules réunis en un seul texte, à copier-coller si l'import ne marche pas |
-| `MC.csv`, `TTE.csv`, `SAN.csv`, `BNP.csv`, `AI.csv` | Cours journaliers 2025 (Yahoo Finance) : Date, Close, AdjClose, Dividend |
+| `Frontiere_Efficiente.xlsx` | Classeur modèle : feuilles *Mode d'emploi*, *Parametres* (actions, codes ISIN, période, source) et *Dividendes* (dividendes de 2025, déjà remplis) |
+| `vba/*.bas` | Les 9 modules VBA (pour lecture ; sur Mac l'import des .bas ne marche pas, utilisez le fichier suivant) |
+| `CODE_COMPLET_a_copier.txt` | **Le code à copier-coller** dans un module VBA : les 9 modules réunis en un seul texte |
+| `MC.csv`, `TTE.csv`, `SAN.csv`, `BNP.csv`, `AI.csv` | Secours : cours 2025 déjà téléchargés (Yahoo Finance, avec dividendes), pour la source *Fichiers CSV* |
 | `Donnees_2_titres_BNP_AI.xlsx` | Données prêtes à l'emploi pour la version manuelle (étape 2) |
 
 Actions retenues : LVMH (MC), TotalEnergies (TTE), Sanofi (SAN), BNP Paribas (BNP) et Air Liquide (AI).
 
 ## 2. Installation sur Mac (une seule fois, environ 5 minutes)
 
-1. Téléchargez le dossier `livrable/` et **gardez tous les fichiers ensemble**.
-2. Ouvrez `Frontiere_Efficiente.xlsx` dans Excel.
-3. **Fichier > Enregistrer sous…** : dans *Format de fichier*, choisissez **« Classeur Excel prenant en charge les macros (.xlsm) »** et enregistrez-le **dans le même dossier que les CSV**.
-4. Ouvrez l'éditeur VBA : **Outils > Macro > Éditeur Visual Basic** (ou l'onglet *Développeur*, puis *Visual Basic*).
-5. Dans l'éditeur, faites **Fichier > Importer un fichier…** et importez **un par un les 8 fichiers** du dossier `vba/`. Ils apparaissent sous *Modules*.
-6. Revenez dans Excel : **Outils > Macro > Macros…**, choisissez **`CreerBoutons`** puis **Exécuter**. Les boutons *Lancer l'analyse* et *Effacer les résultats* apparaissent sur la feuille *Parametres*.
-7. Enregistrez (⌘S).
+1. Téléchargez le dossier `livrable/` et gardez tous les fichiers ensemble.
+2. Ouvrez `Frontiere_Efficiente.xlsx` dans Excel, puis **Fichier > Enregistrer sous…**. Choisissez le format **« Classeur Excel prenant en charge les macros (.xlsm) »** et le même dossier.
+3. Ouvrez **Outils > Macro > Éditeur Visual Basic**. Cliquez sur `VBAProject (Frontiere_Efficiente.xlsm)`, puis faites **Insertion > Module**.
+4. Ouvrez `CODE_COMPLET_a_copier.txt` avec TextEdit, faites **⌘A** puis **⌘C**, cliquez dans la fenêtre du module et faites **⌘V**. Il ne doit rester qu'**un seul** `Option Explicit`, tout en haut.
+5. Faites **Débogage > Compiler VBAProject**. Si aucun message n'apparaît, tout est bon.
+6. Revenez dans Excel : **Outils > Macro > Macros… > `CreerBoutons` > Exécuter**. Les boutons apparaissent sur *Parametres*. Enregistrez avec ⌘S.
 
-> **Si l'import des fichiers .bas ne marche pas**, utilisez le copier-coller. Dans l'éditeur VBA, faites **Insertion > Module**, puis collez **tout** le contenu de `livrable/CODE_COMPLET_a_copier.txt`. Ce fichier contient les 8 modules réunis en un seul, et le résultat est identique. Passez ensuite à l'étape 6.
+> Sur Mac, l'import des fichiers `.bas` apparaît souvent grisé : c'est un défaut connu d'Excel pour Mac, d'où le copier-coller.
 >
-> Si Excel bloque les macros à l'ouverture, cliquez sur **Activer les macros**. Vous pouvez aussi régler ce comportement dans **Excel > Préférences > Sécurité**.
->
-> Pour afficher l'onglet *Développeur* : **Excel > Préférences > Ruban et barre d'outils**, puis cochez *Développeur*.
+> Si Excel bloque les macros à l'ouverture, cliquez sur **Activer les macros**. Le réglage se trouve dans **Excel > Préférences > Sécurité**.
 
 ## 3. Utilisation
 
-1. Sur la feuille *Parametres*, choisissez les actions (*Oui* ou *Non*) et les réglages dans les cases jaunes.
-2. Cliquez sur **Lancer l'analyse**. Au premier lancement, macOS demande l'autorisation de lire les fichiers : cliquez sur **Autoriser l'accès**.
+1. Sur la feuille *Parametres*, vérifiez les réglages :
+   - **Source** : *Euronext*, valeur par défaut.
+   - **Période** : du 01/01/2025 au 31/12/2025.
+   - **Actions** : *Oui* ou *Non*, avec pour chacune son code, son nom, son **ISIN** et son marché (XPAR = Paris).
+2. Cliquez sur **Lancer l'analyse**. La macro télécharge les cours des 5 actions sur Euronext, ce qui prend quelques secondes et demande une connexion Internet.
 3. La macro crée les feuilles suivantes :
+
+> **Euronext en bref.** Pour chaque action, la macro appelle l'export CSV du site, la même adresse que le bouton « Télécharger » de la page de l'action :
+> `https://live.euronext.com/en/ajax/AwlHistoricalPrice/getFullDownloadAjax/<ISIN>-XPAR?format=csv&adjusted=N&startdate=…&enddate=…`
+> - **Mac** : la macro utilise l'outil système `curl`. **Windows** : elle utilise l'objet `MSXML2.XMLHTTP`.
+> - **Dividendes** : Euronext ne les fournit pas, ils viennent de la feuille *Dividendes*.
+> - **Limite** : Euronext ne donne que les **deux dernières années**.
+>
+> **En secours**, si le téléchargement échoue (pas de connexion, Mac qui bloque `curl`…) :
+> 1. Choisissez la source **Fichiers CSV**.
+> 2. Placez à côté du classeur un fichier `CODE.csv` par action. Les fichiers Yahoo fournis conviennent, tout comme un export fait à la main depuis la page de l'action sur live.euronext.com (bouton de téléchargement de l'historique, format CSV, renommé par exemple `MC.csv`).
+
 
 | Feuille | Contenu |
 |---|---|
@@ -114,8 +125,9 @@ Pour les 5 actions, le **portefeuille de variance minimale** est R(pf) = 0,0272 
 | Module | Rôle |
 |---|---|
 | `modMain` | macros des boutons : `LancerAnalyse`, `EffacerResultats`, `CreerBoutons` ; gestion des erreurs |
-| `modConfig` | noms des feuilles et des cellules, lecture et contrôle des paramètres |
-| `modImport` | lecture des CSV (formats Yahoo et Google Sheets, ordre croissant ou décroissant), alignement des dates communes |
+| `modConfig` | noms des feuilles et des cellules, lecture et contrôle des paramètres (source, période, ISIN…) |
+| `modEuronext` | téléchargement des cours sur Euronext (curl sur Mac, MSXML2.XMLHTTP sur Windows) |
+| `modImport` | lecture des données (export Euronext, CSV Yahoo ou Google Sheets), période, dividendes de la feuille *Dividendes*, alignement des dates communes |
 | `modStats` | rendements, moyennes, matrice de covariance, corrélation |
 | `modPortefeuille` | rendement, variance et écart-type d'un portefeuille selon les poids |
 | `modOptimisation` | portefeuille de variance minimale et frontière efficiente (voir ci-dessous) |
@@ -130,24 +142,23 @@ Les résultats ont été vérifiés avec un solveur indépendant (Python, scipy)
 
 ## 6. Ce qui a été testé, et ce qui reste à tester sur Mac
 
-✅ **Testé dans LibreOffice**, qui exécute le VBA, et comparé à un calcul Python de référence :
-- tous les calculs et toutes les feuilles ;
-- les formules de contrôle ;
-- le calculateur ;
-- les messages d'erreur : fichier absent, une seule action, paramètre invalide, action en double, pas de grille incorrect ;
-- les autres formats de fichiers : Google Sheets français et export Yahoo.
+✅ **Testé dans LibreOffice**, qui exécute le VBA, et comparé à un calcul Python de référence (écart inférieur à 10⁻¹⁵) :
+- tous les calculs, la feuille *Dividendes* et le choix de la période ;
+- le mode Euronext, avec les **vrais fichiers renvoyés par Euronext** (récupérés via GitHub Actions) ;
+- le mode *Fichiers CSV*, avec les fichiers Yahoo comme avec les exports Euronext ;
+- les messages d'erreur : ISIN faux ou invalide, réponse vide d'Euronext, période de plus de 2 ans, dates inversées, source inconnue, dividende mal saisi, fichier absent, une seule action…
 
 ⚠️ **À tester dans Excel sur Mac**, car LibreOffice ne sait pas les exécuter :
+- le **téléchargement via `curl`** ;
 - les **graphiques** ;
-- les **boutons** ;
-- la demande d'**autorisation d'accès aux fichiers**.
+- les **boutons**.
 
-En cas de problème, la macro termine quand même les calculs et affiche un avertissement. Envoyez une capture d'écran du message.
+Si le téléchargement échoue, passez en source *Fichiers CSV* et envoyez une capture du message. Si un graphique ne se crée pas, la macro termine quand même les calculs et affiche un avertissement.
 
 ## 7. Dossiers techniques
 
 | Dossier | Contenu |
 |---|---|
-| `donnees/` | données brutes (2025 et 12 derniers mois), téléchargées par `scripts/fetch_data.py` via GitHub Actions |
+| `donnees/` | données brutes : Yahoo (2025 et 12 derniers mois, `scripts/fetch_data.py`) et export Euronext 2025 (`scripts/sonder_euronext.sh`), téléchargées via GitHub Actions |
 | `reference/reference.py` | calcul de référence en Python (mêmes formules, plus le contrôle par scipy) |
 | `outils/` | génération du classeur modèle, test automatique dans LibreOffice, comparaison avec la référence |

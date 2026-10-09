@@ -9,7 +9,7 @@ import re
 import sys
 
 dossier, sortie = sys.argv[1], sys.argv[2]
-ordre = ["modConfig", "modMain", "modImport", "modStats", "modPortefeuille",
+ordre = ["modConfig", "modMain", "modEuronext", "modImport", "modStats", "modPortefeuille",
          "modOptimisation", "modSorties", "modGraphiques"]
 declarations, procedures = [], []
 for nom in ordre:

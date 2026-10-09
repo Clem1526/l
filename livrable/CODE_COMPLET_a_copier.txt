@@ -18,19 +18,32 @@ Public Const FEUILLE_ALEATOIRES As String = "Aleatoires"
 Public Const FEUILLE_CALCULATEUR As String = "Calculateur"
 
 ' --- Cellules de la feuille Parametres ---
-Public Const CELLULE_DOSSIER As String = "C4"
-Public Const CELLULE_NB_POINTS As String = "C5"
-Public Const CELLULE_NB_ALEATOIRES As String = "C6"
-Public Const CELLULE_PAS_GRILLE As String = "C7"
-Public Const CELLULE_TITRE_A As String = "C8"
-Public Const CELLULE_TITRE_B As String = "C9"
+Public Const CELLULE_SOURCE As String = "C4"          ' "Euronext" ou "Fichiers CSV"
+Public Const CELLULE_DATE_DEBUT As String = "C5"
+Public Const CELLULE_DATE_FIN As String = "C6"
+Public Const CELLULE_DOSSIER As String = "C7"
+Public Const CELLULE_NB_POINTS As String = "C8"
+Public Const CELLULE_NB_ALEATOIRES As String = "C9"
+Public Const CELLULE_PAS_GRILLE As String = "C10"
+Public Const CELLULE_TITRE_A As String = "C11"
+Public Const CELLULE_TITRE_B As String = "C12"
 
-' Tableau des actions : colonne B = "Oui"/"Non", C = code (nom du fichier), D = nom
-Public Const LIGNE_PREMIER_TITRE As Long = 13
+' Tableau des actions : B = "Oui"/"Non", C = code, D = nom, E = code ISIN, F = marche Euronext
+Public Const LIGNE_PREMIER_TITRE As Long = 16
 Public Const COL_UTILISER As Long = 2
 Public Const COL_CODE As Long = 3
 Public Const COL_NOM As Long = 4
+Public Const COL_ISIN As Long = 5
+Public Const COL_MARCHE As Long = 6
 Public Const NB_MAX_TITRES As Long = 30
+
+' Feuille Dividendes : A = code, B = date de detachement, C = montant par action (a partir de la ligne 4)
+Public Const FEUILLE_DIVIDENDES As String = "Dividendes"
+Public Const LIGNE_PREMIER_DIVIDENDE As Long = 4
+
+' Sources de donnees possibles
+Public Const SOURCE_EURONEXT As String = "EURONEXT"
+Public Const SOURCE_CSV As String = "CSV"
 
 ' Nombre de jours de bourse par an (pour les valeurs annualisees)
 Public Const JOURS_PAR_AN As Long = 252
@@ -40,6 +53,9 @@ Public Const ERR_UTILISATEUR As Long = -2147220504   ' = vbObjectError + 1000
 
 ' Ensemble des parametres saisis par l'utilisateur
 Public Type TParametres
+    Source As String               ' SOURCE_EURONEXT ou SOURCE_CSV
+    DateDebut As Date              ' periode etudiee
+    DateFin As Date
     Dossier As String              ' dossier contenant les fichiers CSV
     NbPointsFrontiere As Long      ' nombre de points sur la partie efficiente
     NbAleatoires As Long           ' nombre de portefeuilles aleatoires (0 = aucun)
@@ -49,6 +65,8 @@ Public Type TParametres
     NbTitres As Long
     Codes() As String              ' codes des actions retenues (1 To NbTitres)
     Noms() As String               ' noms des entreprises (1 To NbTitres)
+    Isins() As String              ' codes ISIN (1 To NbTitres), pour Euronext
+    Marches() As String            ' marches Euronext, ex. XPAR = Paris (1 To NbTitres)
 End Type
 
 '==============================================================================
@@ -56,21 +74,53 @@ End Type
 '==============================================================================
 ' modMain : macros lancees par les boutons de la feuille Parametres
 '
-'   LancerAnalyse    : lit les fichiers CSV, calcule tout et cree les feuilles
+'   LancerAnalyse    : recupere les cours (Euronext ou CSV), calcule tout et cree les feuilles
 '   EffacerResultats : supprime les feuilles de resultats
 '   CreerBoutons     : (a lancer une fois) ajoute les boutons sur Parametres
 '==============================================================================
 
 '==============================================================================
+' Module d'origine : modEuronext
+'==============================================================================
+' modEuronext : telechargement des cours historiques sur le site d'Euronext
+'
+' Euronext propose l'export CSV de l'historique d'une action (bouton
+' "Telecharger" de la page de l'action sur live.euronext.com). La macro
+' appelle directement la meme adresse :
+'   https://live.euronext.com/en/ajax/AwlHistoricalPrice/getFullDownloadAjax/
+'       <ISIN>-<MARCHE>?format=csv&decimal_separator=.&date_form=d/m/Y
+'       &adjusted=N&startdate=AAAA-MM-JJ&enddate=AAAA-MM-JJ
+' adjusted=N : cours reellement cotes (Euronext ne tient pas compte des
+' dividendes, qui sont lus dans la feuille Dividendes).
+' Limite d'Euronext : seules les deux dernieres annees sont disponibles.
+'
+' Sur Mac, Excel ne dispose pas d'objet HTTP : la macro utilise l'outil
+' systeme "curl" (fonctions popen / fread de la bibliotheque C du Mac).
+' Sur Windows, elle utilise l'objet MSXML2.XMLHTTP.
+'==============================================================================
+
+#If Mac Then
+Private Declare PtrSafe Function c_popen Lib "/usr/lib/libc.dylib" Alias "popen" (ByVal commande As String, ByVal mode As String) As LongPtr
+Private Declare PtrSafe Function c_pclose Lib "/usr/lib/libc.dylib" Alias "pclose" (ByVal fichier As LongPtr) As Long
+Private Declare PtrSafe Function c_fread Lib "/usr/lib/libc.dylib" Alias "fread" (ByVal tampon As String, ByVal taille As LongPtr, ByVal nombre As LongPtr, ByVal fichier As LongPtr) As Long
+Private Declare PtrSafe Function c_feof Lib "/usr/lib/libc.dylib" Alias "feof" (ByVal fichier As LongPtr) As LongPtr
+#End If
+
+Private Const ADRESSE_EURONEXT As String = "https://live.euronext.com/en/ajax/AwlHistoricalPrice/getFullDownloadAjax/"
+
+'==============================================================================
 ' Module d'origine : modImport
 '==============================================================================
-' modImport : lecture des fichiers CSV de cours et alignement des dates
+' modImport : recuperation des cours (Euronext ou fichiers CSV), dividendes,
+'             alignement des dates
 '
-' Formats acceptes (un fichier par action, nomme CODE.csv) :
-'   - Date,Close,AdjClose,Dividend   (fichiers fournis, issus de Yahoo Finance)
+' Formats acceptes (Euronext ou un fichier par action, nomme CODE.csv) :
+'   - export Euronext : 3 lignes d'introduction puis Date;Open;High;Low;Last;Close;...
+'   - Date,Close,AdjClose,Dividend   (fichiers issus de Yahoo Finance)
 '   - Date,Open,High,Low,Close,Adj Close,Volume   (export Yahoo Finance)
 '   - Date;Close   (export Google Sheets en francais, virgule decimale)
 ' Les dates peuvent etre AAAA-MM-JJ ou JJ/MM/AAAA, en ordre croissant ou decroissant.
+' Si le fichier n'a pas de colonne de dividendes, ceux de la feuille Dividendes sont ajoutes.
 '==============================================================================
 
 '==============================================================================
@@ -158,7 +208,8 @@ Public Function LireParametres() As TParametres
     Dim ws As Worksheet
     Dim i As Long, j As Long, ligne As Long
     Dim utiliser As String, code As String, nom As String
-    Dim codes() As String, noms() As String
+    Dim codes() As String, noms() As String, isins() As String, marches() As String
+    Dim isin As String, marche As String, texteSource As String
 
     Set ws = FeuilleExistante(FEUILLE_PARAMETRES)
     If ws Is Nothing Then
@@ -166,10 +217,34 @@ Public Function LireParametres() As TParametres
                           "Ne la renommez pas et ne la supprimez pas."
     End If
 
-    ' Dossier des fichiers : par defaut, celui du classeur
+    ' Source des donnees
+    texteSource = UCase$(Trim$(CStr(ws.Range(CELLULE_SOURCE).Value)))
+    If InStr(texteSource, "EURONEXT") > 0 Then
+        p.Source = SOURCE_EURONEXT
+    ElseIf InStr(texteSource, "CSV") > 0 Or InStr(texteSource, "FICHIER") > 0 Then
+        p.Source = SOURCE_CSV
+    Else
+        ErreurUtilisateur "Source des donnees (cellule " & CELLULE_SOURCE & ") : choisissez " & _
+                          "'Euronext' (telechargement automatique) ou 'Fichiers CSV'."
+    End If
+
+    ' Periode etudiee
+    p.DateDebut = LireDate(ws.Range(CELLULE_DATE_DEBUT), "Date de debut")
+    p.DateFin = LireDate(ws.Range(CELLULE_DATE_FIN), "Date de fin")
+    If p.DateFin <= p.DateDebut Then
+        ErreurUtilisateur "La date de fin (cellule " & CELLULE_DATE_FIN & ") doit etre posterieure " & _
+                          "a la date de debut (cellule " & CELLULE_DATE_DEBUT & ")."
+    End If
+    If p.Source = SOURCE_EURONEXT And p.DateDebut < Date - 730 Then
+        ErreurUtilisateur "Euronext ne fournit que les deux dernieres annees de cours : la date de debut " & _
+                          "doit etre posterieure au " & Format$(Date - 730, "dd/mm/yyyy") & "." & vbLf & _
+                          "Pour une periode plus ancienne, choisissez la source 'Fichiers CSV'."
+    End If
+
+    ' Dossier des fichiers CSV : par defaut, celui du classeur
     p.Dossier = Trim$(CStr(ws.Range(CELLULE_DOSSIER).Value))
     If p.Dossier = "" Then
-        If ThisWorkbook.Path = "" Then
+        If ThisWorkbook.Path = "" And p.Source = SOURCE_CSV Then
             ErreurUtilisateur "Enregistrez d'abord le classeur (format .xlsm) dans le dossier " & _
                               "qui contient les fichiers CSV, puis relancez la macro."
         End If
@@ -183,11 +258,15 @@ Public Function LireParametres() As TParametres
     ' Tableau des actions
     ReDim codes(1 To NB_MAX_TITRES)
     ReDim noms(1 To NB_MAX_TITRES)
+    ReDim isins(1 To NB_MAX_TITRES)
+    ReDim marches(1 To NB_MAX_TITRES)
     For i = 0 To NB_MAX_TITRES - 1
         ligne = LIGNE_PREMIER_TITRE + i
         utiliser = UCase$(Trim$(CStr(ws.Cells(ligne, COL_UTILISER).Value)))
         code = Trim$(CStr(ws.Cells(ligne, COL_CODE).Value))
         nom = Trim$(CStr(ws.Cells(ligne, COL_NOM).Value))
+        isin = UCase$(Trim$(CStr(ws.Cells(ligne, COL_ISIN).Value)))
+        marche = UCase$(Trim$(CStr(ws.Cells(ligne, COL_MARCHE).Value)))
         If code <> "" And (utiliser = "OUI" Or utiliser = "O" Or utiliser = "X") Then
             For j = 1 To p.NbTitres
                 If UCase$(codes(j)) = UCase$(code) Then
@@ -199,6 +278,17 @@ Public Function LireParametres() As TParametres
             codes(p.NbTitres) = code
             If nom = "" Then nom = code
             noms(p.NbTitres) = nom
+            If p.Source = SOURCE_EURONEXT Then
+                If Not (isin Like "[A-Z][A-Z]??????????") Or Len(isin) <> 12 Then
+                    ErreurUtilisateur "Code ISIN invalide pour l'action '" & code & "' (cellule " & _
+                                      ws.Cells(ligne, COL_ISIN).Address(False, False) & ") : un ISIN compte " & _
+                                      "12 caracteres, par exemple FR0000121014 pour LVMH." & vbLf & _
+                                      "Vous le trouvez sur la page de l'action sur live.euronext.com."
+                End If
+            End If
+            If marche = "" Then marche = "XPAR"         ' Euronext Paris par defaut
+            isins(p.NbTitres) = isin
+            marches(p.NbTitres) = marche
         End If
     Next i
 
@@ -208,8 +298,12 @@ Public Function LireParametres() As TParametres
     End If
     ReDim Preserve codes(1 To p.NbTitres)
     ReDim Preserve noms(1 To p.NbTitres)
+    ReDim Preserve isins(1 To p.NbTitres)
+    ReDim Preserve marches(1 To p.NbTitres)
     p.Codes = codes
     p.Noms = noms
+    p.Isins = isins
+    p.Marches = marches
 
     ' Les deux titres du tableau "Deux titres" (par defaut : les deux premiers)
     p.IndiceTitreA = IndiceDuTitre(p, CStr(ws.Range(CELLULE_TITRE_A).Value), 1)
@@ -235,6 +329,17 @@ Private Function LireEntier(ByVal cellule As Range, ByVal libelle As String, _
                           ") : saisissez un nombre entier entre " & mini & " et " & maxi & "."
     End If
     LireEntier = CLng(v)
+End Function
+
+'' Lit une date saisie dans une cellule.
+Private Function LireDate(ByVal cellule As Range, ByVal libelle As String) As Date
+    Dim v As Variant
+    v = cellule.Value
+    If IsEmpty(v) Or Not IsDate(v) Then
+        ErreurUtilisateur "Parametre '" & libelle & "' (cellule " & cellule.Address(False, False) & _
+                          ") : saisissez une date, par exemple 01/01/2025."
+    End If
+    LireDate = CDate(v)
 End Function
 
 ' Lit le pas de la grille (ex. 10 %) : il doit diviser 100 %.
@@ -331,6 +436,7 @@ Public Sub LancerAnalyse()
     FeuilleExistante(FEUILLE_FRONTIERE).Activate
 
     message = "Analyse terminee en " & Format$(Timer - debut, "0.0") & " s." & vbLf & vbLf & _
+              "Source des cours : " & IIf(p.Source = SOURCE_EURONEXT, "Euronext (telechargement)", "fichiers CSV") & vbLf & _
               p.NbTitres & " actions, " & UBound(rend, 1) & " rendements journaliers" & vbLf & _
               "du " & Format$(dates(1), "dd/mm/yyyy") & " au " & Format$(dates(UBound(dates)), "dd/mm/yyyy") & "." & vbLf & vbLf & _
               "Portefeuille de variance minimale :" & vbLf & _
@@ -357,11 +463,11 @@ GestionErreur:
     End If
 End Sub
 
-' Supprime toutes les feuilles de resultats (les parametres sont conserves).
+'' Supprime toutes les feuilles de resultats (les parametres et les dividendes sont conserves).
 Public Sub EffacerResultats()
     Dim noms As Variant, i As Long
     If MsgBox("Supprimer toutes les feuilles de resultats ?" & vbLf & _
-              "(Les feuilles Parametres et Mode d'emploi sont conservees.)", _
+              "(Les feuilles Mode d'emploi, Parametres et Dividendes sont conservees.)", _
               vbQuestion + vbYesNo, "Frontiere efficiente") = vbNo Then Exit Sub
     noms = Array(FEUILLE_COURS, FEUILLE_RENDEMENTS, FEUILLE_STATS, FEUILLE_DEUX_TITRES, _
                  FEUILLE_FRONTIERE, FEUILLE_ALEATOIRES, FEUILLE_CALCULATEUR)
@@ -382,8 +488,8 @@ Public Sub CreerBoutons()
     End If
     SupprimerBouton ws, "btnLancer"
     SupprimerBouton ws, "btnEffacer"
-    AjouterBouton ws, "btnLancer", "Lancer l'analyse", "LancerAnalyse", ws.Range("F4")
-    AjouterBouton ws, "btnEffacer", "Effacer les resultats", "EffacerResultats", ws.Range("F7")
+    AjouterBouton ws, "btnLancer", "Lancer l'analyse", "LancerAnalyse", ws.Range("H4")
+    AjouterBouton ws, "btnEffacer", "Effacer les resultats", "EffacerResultats", ws.Range("H7")
     MsgBox "Boutons crees sur la feuille " & FEUILLE_PARAMETRES & ".", vbInformation
 End Sub
 
@@ -416,33 +522,128 @@ Public Sub SupprimerFeuille(ByVal nom As String)
 End Sub
 
 '##############################################################################
+' modEuronext
+'##############################################################################
+' Adresse de l'export CSV Euronext pour une action et une periode.
+Public Function AdresseEuronext(ByVal isin As String, ByVal marche As String, _
+                                ByVal debut As Date, ByVal fin As Date) As String
+    AdresseEuronext = ADRESSE_EURONEXT & isin & "-" & marche & _
+        "?format=csv&decimal_separator=.&date_form=d/m/Y&adjusted=N" & _
+        "&startdate=" & Format$(debut, "yyyy-mm-dd") & "&enddate=" & Format$(fin, "yyyy-mm-dd")
+End Function
+
+' Telecharge l'historique d'une action et renvoie le contenu du fichier CSV.
+Public Function TelechargerCoursEuronext(ByVal code As String, ByVal isin As String, ByVal marche As String, _
+                                         ByVal debut As Date, ByVal fin As Date) As String
+    Dim adresse As String, contenu As String
+    adresse = AdresseEuronext(isin, marche, debut, fin)
+    contenu = TelechargerTexte(adresse)
+
+    If InStr(contenu, "Date;") = 0 Then
+        ErreurUtilisateur "Le telechargement des cours de " & code & " (ISIN " & isin & ") sur Euronext a echoue." & vbLf & vbLf & _
+                          "Reponse recue : " & Left$(contenu, 200) & vbLf & vbLf & _
+                          "Verifiez votre connexion Internet et le code ISIN. Si le probleme persiste, " & _
+                          "telechargez les fichiers sur live.euronext.com et choisissez la source 'Fichiers CSV'."
+    End If
+    ' Euronext renvoie un fichier sans aucune ligne de cours si l'ISIN, le marche ou la periode ne conviennent pas
+    If Len(Trim$(Replace(Replace(Mid$(contenu, InStr(contenu, "Date;")), vbCr, ""), vbLf, ""))) < 200 Then
+        ErreurUtilisateur "Euronext n'a renvoye aucune cotation pour " & code & " (ISIN " & isin & ", marche " & marche & ")" & _
+                          " entre le " & Format$(debut, "dd/mm/yyyy") & " et le " & Format$(fin, "dd/mm/yyyy") & "." & vbLf & vbLf & _
+                          "Verifiez le code ISIN et le marche (XPAR = Paris) dans la feuille Parametres."
+    End If
+    TelechargerCoursEuronext = contenu
+End Function
+
+' Telecharge le contenu d'une adresse web (texte).
+Public Function TelechargerTexte(ByVal adresse As String) As String
+#If Mac Then
+    TelechargerTexte = TelechargerAvecCurl(adresse)
+#Else
+    TelechargerTexte = TelechargerAvecXmlHttp(adresse)
+#End If
+End Function
+
+#If Mac Then
+' Mac : execute "curl" et lit sa sortie.
+Private Function TelechargerAvecCurl(ByVal adresse As String) As String
+    Dim commande As String, fichier As LongPtr, tampon As String, nbLus As Long, resultat As String
+    commande = "/usr/bin/curl --silent --show-error --location --max-time 60 " & _
+               "--user-agent 'Mozilla/5.0' '" & adresse & "' 2>&1"
+    fichier = c_popen(commande, "r")
+    If fichier = 0 Then
+        ErreurUtilisateur "Impossible de lancer le telechargement (curl) sur ce Mac." & vbLf & _
+                          "Choisissez la source 'Fichiers CSV' et telechargez les fichiers sur live.euronext.com."
+    End If
+    Do While c_feof(fichier) = 0
+        tampon = Space$(4096)
+        nbLus = c_fread(tampon, 1, Len(tampon) - 1, fichier)
+        If nbLus > 0 Then resultat = resultat & Left$(tampon, nbLus)
+    Loop
+    c_pclose fichier
+    TelechargerAvecCurl = resultat
+End Function
+#End If
+
+' Windows : requete HTTP classique.
+Private Function TelechargerAvecXmlHttp(ByVal adresse As String) As String
+    Dim requete As Object
+    On Error GoTo Echec
+    Set requete = CreateObject("MSXML2.XMLHTTP")
+    requete.Open "GET", adresse, False
+    requete.setRequestHeader "User-Agent", "Mozilla/5.0"
+    requete.send
+    If requete.Status <> 200 Then
+        TelechargerAvecXmlHttp = "Erreur HTTP " & requete.Status
+    Else
+        TelechargerAvecXmlHttp = requete.responseText
+    End If
+    Exit Function
+Echec:
+    TelechargerAvecXmlHttp = "Erreur : " & Err.Description
+End Function
+
+'##############################################################################
 ' modImport
 '##############################################################################
-' Lit les fichiers de toutes les actions retenues et renvoie des tableaux
+' Recupere les cours de toutes les actions retenues et renvoie des tableaux
 ' alignes sur les dates communes a toutes les actions :
 '   dates(1 To T), prix(1 To T, 1 To N), dividendes(1 To T, 1 To N)
 Public Sub ImporterDonnees(ByRef p As TParametres, ByRef dates() As Date, ByRef prix() As Double, _
                            ByRef dividendes() As Double, ByRef nbDatesIgnorees As Long)
     Dim i As Long, t As Long, k As Long, nbDates As Long
-    Dim chemins() As String
+    Dim chemins() As String, texte As String, libelle As String, aDesDividendes As Boolean
     Dim datesTitres() As Variant, prixTitres() As Variant, divTitres() As Variant
     Dim d() As Date, c() As Double, dv() As Double
     Dim communes() As Date, autres() As Date
+    Dim codesDiv() As String, datesDiv() As Date, montantsDiv() As Double, nbDiv As Long
 
     ReDim chemins(1 To p.NbTitres)
     ReDim datesTitres(1 To p.NbTitres)
     ReDim prixTitres(1 To p.NbTitres)
     ReDim divTitres(1 To p.NbTitres)
 
-    For i = 1 To p.NbTitres
-        chemins(i) = CheminFichier(p.Dossier, p.Codes(i))
-    Next i
-    DemanderAccesFichiers chemins
+    If p.Source = SOURCE_CSV Then
+        For i = 1 To p.NbTitres
+            chemins(i) = CheminFichier(p.Dossier, p.Codes(i))
+        Next i
+        DemanderAccesFichiers chemins
+    End If
+    LireTableDividendes codesDiv, datesDiv, montantsDiv, nbDiv
 
-    ' 1) Lecture de chaque fichier
+    ' 1) Recuperation et lecture des cours de chaque action
     For i = 1 To p.NbTitres
-        Application.StatusBar = "Lecture du fichier " & p.Codes(i) & ".csv ..."
-        LireFichierCours chemins(i), d, c, dv
+        If p.Source = SOURCE_EURONEXT Then
+            Application.StatusBar = "Telechargement des cours de " & p.Codes(i) & " sur Euronext (" & i & "/" & p.NbTitres & ")..."
+            texte = TelechargerCoursEuronext(p.Codes(i), p.Isins(i), p.Marches(i), p.DateDebut, p.DateFin)
+            libelle = "Euronext, action " & p.Codes(i) & " (ISIN " & p.Isins(i) & ")"
+        Else
+            Application.StatusBar = "Lecture du fichier " & p.Codes(i) & ".csv ..."
+            texte = LireTexte(chemins(i))
+            libelle = chemins(i)
+        End If
+        AnalyserTexteCours texte, libelle, d, c, dv, aDesDividendes
+        GarderPeriode d, c, dv, p.DateDebut, p.DateFin, libelle
+        If Not aDesDividendes Then AjouterDividendes p.Codes(i), d, dv, codesDiv, datesDiv, montantsDiv, nbDiv
         datesTitres(i) = CopieDates(d)       ' copies explicites : chaque action garde ses propres tableaux
         prixTitres(i) = CopieNombres(c)
         divTitres(i) = CopieNombres(dv)
@@ -508,26 +709,38 @@ Private Sub DemanderAccesFichiers(ByRef chemins() As String)
 #End If
 End Sub
 
-' Lit un fichier CSV et renvoie ses dates, cours de cloture et dividendes (ordre croissant).
-Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
-                            ByRef cours() As Double, ByRef dividendes() As Double)
-    Dim contenu As String, sep As String
-    Dim lignes() As String, champs() As String
-    Dim colDate As Long, colCours As Long, colDiv As Long, colMax As Long
+' Analyse le contenu d'un fichier de cours et renvoie ses dates, cours de cloture
+' et dividendes (ordre croissant). aDesDividendes = le fichier contient des dividendes
+' (colonne Dividend) ou un cours ajuste qui les inclut deja.
+Public Sub AnalyserTexteCours(ByVal contenu As String, ByVal libelle As String, ByRef dates() As Date, _
+                              ByRef cours() As Double, ByRef dividendes() As Double, ByRef aDesDividendes As Boolean)
+    Dim sep As String, lignes() As String, champs() As String
+    Dim colDate As Long, colCours As Long, colDiv As Long, colMax As Long, ligneEntete As Long
     Dim i As Long, n As Long
     Dim d As Date, prix As Double, dv As Double
     Dim okDate As Boolean, okPrix As Boolean, okDiv As Boolean
 
-    contenu = LireTexte(chemin)
     If Left$(contenu, 3) = Chr$(239) & Chr$(187) & Chr$(191) Then contenu = Mid$(contenu, 4) ' BOM UTF-8
     contenu = Replace(contenu, vbCr, "")    ' fins de ligne Windows / Mac / Unix
     lignes = Split(contenu, vbLf)
-    If UBound(lignes) < 3 Then
-        ErreurUtilisateur "Le fichier suivant est vide ou trop court :" & vbLf & chemin
+
+    ' La ligne d'en-tete est la premiere qui contient "date" et un nom de colonne de cours
+    ligneEntete = -1
+    For i = 0 To UBound(lignes)
+        If i > 20 Then Exit For
+        If InStr(LCase$(lignes(i)), "date") > 0 And (InStr(LCase$(lignes(i)), "close") > 0 _
+           Or InStr(LCase$(lignes(i)), "clot") > 0 Or InStr(LCase$(lignes(i)), "adj") > 0) Then
+            ligneEntete = i
+            Exit For
+        End If
+    Next i
+    If ligneEntete < 0 Or UBound(lignes) < ligneEntete + 3 Then
+        ErreurUtilisateur "Donnees vides ou en-tete non reconnu :" & vbLf & libelle & vbLf & _
+                          "La ligne d'en-tete doit contenir au moins les colonnes 'Date' et 'Close'."
     End If
 
-    If InStr(lignes(0), ";") > 0 Then sep = ";" Else sep = ","
-    TrouverColonnes Split(lignes(0), sep), chemin, colDate, colCours, colDiv
+    If InStr(lignes(ligneEntete), ";") > 0 Then sep = ";" Else sep = ","
+    TrouverColonnes Split(lignes(ligneEntete), sep), libelle, colDate, colCours, colDiv, aDesDividendes
     colMax = colDate
     If colCours > colMax Then colMax = colCours
     If colDiv > colMax Then colMax = colDiv
@@ -535,7 +748,7 @@ Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
     ReDim dates(1 To UBound(lignes))
     ReDim cours(1 To UBound(lignes))
     ReDim dividendes(1 To UBound(lignes))
-    For i = 1 To UBound(lignes)
+    For i = ligneEntete + 1 To UBound(lignes)
         If Len(Trim$(lignes(i))) > 0 Then
             champs = Split(lignes(i), sep)
             If UBound(champs) >= colMax Then
@@ -549,7 +762,7 @@ Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
                 ' Les lignes sans cours (ex. "null") sont ignorees
                 If okDate And okPrix Then
                     If prix <= 0 Then
-                        ErreurUtilisateur "Cours nul ou negatif a la ligne " & (i + 1) & " du fichier :" & vbLf & chemin
+                        ErreurUtilisateur "Cours nul ou negatif a la ligne " & (i + 1) & " :" & vbLf & libelle
                     End If
                     n = n + 1
                     dates(n) = d
@@ -561,20 +774,85 @@ Public Sub LireFichierCours(ByVal chemin As String, ByRef dates() As Date, _
     Next i
 
     If n < 3 Then
-        ErreurUtilisateur "Aucune donnee exploitable dans le fichier :" & vbLf & chemin & vbLf & _
+        ErreurUtilisateur "Aucune donnee exploitable :" & vbLf & libelle & vbLf & _
                           "Format attendu : une colonne Date et une colonne Close."
     End If
     ReDim Preserve dates(1 To n)
     ReDim Preserve cours(1 To n)
     ReDim Preserve dividendes(1 To n)
 
-    If dates(1) > dates(n) Then InverserOrdre dates, cours, dividendes   ' fichier du plus recent au plus ancien
+    If dates(1) > dates(n) Then InverserOrdre dates, cours, dividendes   ' du plus recent au plus ancien
     For i = 2 To n
         If dates(i) <= dates(i - 1) Then
-            ErreurUtilisateur "Dates non triees ou en double (" & Format$(dates(i), "dd/mm/yyyy") & _
-                              ") dans le fichier :" & vbLf & chemin
+            ErreurUtilisateur "Dates non triees ou en double (" & Format$(dates(i), "dd/mm/yyyy") & ") :" & vbLf & libelle
         End If
     Next i
+End Sub
+
+' Ne garde que les cotations comprises entre debut et fin (inclus).
+Private Sub GarderPeriode(ByRef dates() As Date, ByRef cours() As Double, ByRef dividendes() As Double, _
+                          ByVal debut As Date, ByVal fin As Date, ByVal libelle As String)
+    Dim i As Long, n As Long
+    For i = 1 To UBound(dates)
+        If dates(i) >= debut And dates(i) <= fin Then
+            n = n + 1
+            dates(n) = dates(i)
+            cours(n) = cours(i)
+            dividendes(n) = dividendes(i)
+        End If
+    Next i
+    If n < 3 Then
+        ErreurUtilisateur "Moins de 3 cotations entre le " & Format$(debut, "dd/mm/yyyy") & " et le " & _
+                          Format$(fin, "dd/mm/yyyy") & " :" & vbLf & libelle & vbLf & _
+                          "Verifiez la periode choisie dans la feuille Parametres."
+    End If
+    ReDim Preserve dates(1 To n)
+    ReDim Preserve cours(1 To n)
+    ReDim Preserve dividendes(1 To n)
+End Sub
+
+' Lit la feuille Dividendes (code, date de detachement, montant par action).
+Private Sub LireTableDividendes(ByRef codes() As String, ByRef datesDiv() As Date, _
+                                ByRef montants() As Double, ByRef nb As Long)
+    Dim ws As Worksheet, ligne As Long, code As String
+    nb = 0
+    ReDim codes(1 To 1): ReDim datesDiv(1 To 1): ReDim montants(1 To 1)
+    Set ws = FeuilleExistante(FEUILLE_DIVIDENDES)
+    If ws Is Nothing Then Exit Sub
+    ligne = LIGNE_PREMIER_DIVIDENDE
+    Do While Trim$(CStr(ws.Cells(ligne, 1).Value)) <> ""
+        code = Trim$(CStr(ws.Cells(ligne, 1).Value))
+        If Not IsDate(ws.Cells(ligne, 2).Value) Then
+            ErreurUtilisateur "Feuille Dividendes, cellule " & ws.Cells(ligne, 2).Address(False, False) & _
+                              " : saisissez la date de detachement (ex. 24/04/2025)."
+        End If
+        If IsEmpty(ws.Cells(ligne, 3).Value) Or Not IsNumeric(ws.Cells(ligne, 3).Value) Then
+            ErreurUtilisateur "Feuille Dividendes, cellule " & ws.Cells(ligne, 3).Address(False, False) & _
+                              " : saisissez le montant du dividende par action (ex. 7,5)."
+        End If
+        nb = nb + 1
+        ReDim Preserve codes(1 To nb): ReDim Preserve datesDiv(1 To nb): ReDim Preserve montants(1 To nb)
+        codes(nb) = UCase$(code)
+        datesDiv(nb) = CDate(ws.Cells(ligne, 2).Value)
+        montants(nb) = CDbl(ws.Cells(ligne, 3).Value)
+        ligne = ligne + 1
+    Loop
+End Sub
+
+' Ajoute les dividendes d'une action au jour de detachement (ou au premier jour de cotation suivant).
+Private Sub AjouterDividendes(ByVal code As String, ByRef dates() As Date, ByRef dividendes() As Double, _
+                              ByRef codes() As String, ByRef datesDiv() As Date, ByRef montants() As Double, _
+                              ByVal nb As Long)
+    Dim k As Long, t As Long
+    For k = 1 To nb
+        If codes(k) = UCase$(code) And datesDiv(k) > dates(1) And datesDiv(k) <= dates(UBound(dates)) Then
+            t = 2
+            Do While dates(t) < datesDiv(k)
+                t = t + 1
+            Loop
+            dividendes(t) = dividendes(t) + montants(k)
+        End If
+    Next k
 End Sub
 
 ' Lit tout le contenu d'un fichier texte.
@@ -597,9 +875,9 @@ End Function
 
 ' Repere les colonnes Date, cours de cloture et dividende dans la ligne d'en-tete.
 ' Priorite au cours "Close" + colonne "Dividend" (formule du cours) ; a defaut, cours ajuste ;
-' a defaut, cours "Close" seul (dividendes ignores).
-Private Sub TrouverColonnes(ByRef entete() As String, ByVal chemin As String, ByRef colDate As Long, _
-                            ByRef colCours As Long, ByRef colDiv As Long)
+' a defaut, cours "Close" seul (dividendes pris dans la feuille Dividendes).
+Private Sub TrouverColonnes(ByRef entete() As String, ByVal libelle As String, ByRef colDate As Long, _
+                            ByRef colCours As Long, ByRef colDiv As Long, ByRef aDesDividendes As Boolean)
     Dim i As Long, nom As String, colAjuste As Long
     colDate = -1: colCours = -1: colDiv = -1: colAjuste = -1
     For i = 0 To UBound(entete)
@@ -618,9 +896,12 @@ Private Sub TrouverColonnes(ByRef entete() As String, ByVal chemin As String, By
     If colAjuste >= 0 And (colCours < 0 Or colDiv < 0) Then
         colCours = colAjuste
         colDiv = -1
+        aDesDividendes = True       ' deja inclus dans le cours ajuste
+    Else
+        aDesDividendes = (colDiv >= 0)
     End If
     If colDate < 0 Or colCours < 0 Then
-        ErreurUtilisateur "En-tete non reconnu dans le fichier :" & vbLf & chemin & vbLf & _
+        ErreurUtilisateur "En-tete non reconnu :" & vbLf & libelle & vbLf & _
                           "La premiere ligne doit contenir au moins les colonnes 'Date' et 'Close'."
     End If
 End Sub

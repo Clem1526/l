@@ -15,6 +15,8 @@ from com.sun.star.beans import PropertyValue
 
 classeur, dossier_vba, sortie, journal = map(os.path.abspath, sys.argv[1:5])
 macro = sys.argv[5] if len(sys.argv) > 5 else "LancerAnalyse"
+# Dossier simulant Euronext : fichiers <ISIN>.csv renvoyés à la place du téléchargement
+dossier_euronext = os.environ.get("TEST_EURONEXT_DIR", "")
 
 
 def prop(nom, valeur):
@@ -49,6 +51,8 @@ try:
         code = re.sub(r"^Attribute VB_Name.*\n", "", code, flags=re.M)
         code = re.sub(r"\bMsgBox (?=[^(=])", "TestLog ", code)
         code = re.sub(r"#If Mac Then.*?#End If\n", "", code, flags=re.S)  # spécifique Excel Mac
+        if dossier_euronext:
+            code = code.replace("Public Function TelechargerTexte(", "Public Function TelechargerTexte_Reel(")
         code = "Option VBASupport 1\n" + code
         if nom == "modMain":
             code += f'''
@@ -59,6 +63,23 @@ Public Sub TestLog(ByVal a As Variant, Optional ByVal b As Variant, Optional ByV
     Print #f, "MSG: " & a
     Close #f
 End Sub
+'''
+        if dossier_euronext and nom == "modMain":
+            code += f'''
+Public Function TelechargerTexte(ByVal adresse As String) As String
+    Dim isin As String, f As Integer, chemin As String
+    TestLog "URL: " & adresse
+    isin = Mid$(adresse, InStr(adresse, "getFullDownloadAjax/") + 20, 12)
+    chemin = "{dossier_euronext}/" & isin & ".csv"
+    If Dir(chemin) = "" Then
+        TelechargerTexte = "<html>Page introuvable</html>"
+        Exit Function
+    End If
+    f = FreeFile
+    Open chemin For Input As #f
+    TelechargerTexte = Input$(LOF(f), #f)
+    Close #f
+End Function
 '''
         if lib.hasByName(nom):
             lib.removeByName(nom)

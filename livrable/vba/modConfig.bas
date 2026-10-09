@@ -15,19 +15,32 @@ Public Const FEUILLE_ALEATOIRES As String = "Aleatoires"
 Public Const FEUILLE_CALCULATEUR As String = "Calculateur"
 
 ' --- Cellules de la feuille Parametres ---
-Public Const CELLULE_DOSSIER As String = "C4"
-Public Const CELLULE_NB_POINTS As String = "C5"
-Public Const CELLULE_NB_ALEATOIRES As String = "C6"
-Public Const CELLULE_PAS_GRILLE As String = "C7"
-Public Const CELLULE_TITRE_A As String = "C8"
-Public Const CELLULE_TITRE_B As String = "C9"
+Public Const CELLULE_SOURCE As String = "C4"          ' "Euronext" ou "Fichiers CSV"
+Public Const CELLULE_DATE_DEBUT As String = "C5"
+Public Const CELLULE_DATE_FIN As String = "C6"
+Public Const CELLULE_DOSSIER As String = "C7"
+Public Const CELLULE_NB_POINTS As String = "C8"
+Public Const CELLULE_NB_ALEATOIRES As String = "C9"
+Public Const CELLULE_PAS_GRILLE As String = "C10"
+Public Const CELLULE_TITRE_A As String = "C11"
+Public Const CELLULE_TITRE_B As String = "C12"
 
-' Tableau des actions : colonne B = "Oui"/"Non", C = code (nom du fichier), D = nom
-Public Const LIGNE_PREMIER_TITRE As Long = 13
+' Tableau des actions : B = "Oui"/"Non", C = code, D = nom, E = code ISIN, F = marche Euronext
+Public Const LIGNE_PREMIER_TITRE As Long = 16
 Public Const COL_UTILISER As Long = 2
 Public Const COL_CODE As Long = 3
 Public Const COL_NOM As Long = 4
+Public Const COL_ISIN As Long = 5
+Public Const COL_MARCHE As Long = 6
 Public Const NB_MAX_TITRES As Long = 30
+
+' Feuille Dividendes : A = code, B = date de detachement, C = montant par action (a partir de la ligne 4)
+Public Const FEUILLE_DIVIDENDES As String = "Dividendes"
+Public Const LIGNE_PREMIER_DIVIDENDE As Long = 4
+
+' Sources de donnees possibles
+Public Const SOURCE_EURONEXT As String = "EURONEXT"
+Public Const SOURCE_CSV As String = "CSV"
 
 ' Nombre de jours de bourse par an (pour les valeurs annualisees)
 Public Const JOURS_PAR_AN As Long = 252
@@ -37,6 +50,9 @@ Public Const ERR_UTILISATEUR As Long = -2147220504   ' = vbObjectError + 1000
 
 ' Ensemble des parametres saisis par l'utilisateur
 Public Type TParametres
+    Source As String               ' SOURCE_EURONEXT ou SOURCE_CSV
+    DateDebut As Date              ' periode etudiee
+    DateFin As Date
     Dossier As String              ' dossier contenant les fichiers CSV
     NbPointsFrontiere As Long      ' nombre de points sur la partie efficiente
     NbAleatoires As Long           ' nombre de portefeuilles aleatoires (0 = aucun)
@@ -46,6 +62,8 @@ Public Type TParametres
     NbTitres As Long
     Codes() As String              ' codes des actions retenues (1 To NbTitres)
     Noms() As String               ' noms des entreprises (1 To NbTitres)
+    Isins() As String              ' codes ISIN (1 To NbTitres), pour Euronext
+    Marches() As String            ' marches Euronext, ex. XPAR = Paris (1 To NbTitres)
 End Type
 
 ' Declenche une erreur "utilisateur" : le message sera affiche tel quel.
@@ -66,7 +84,8 @@ Public Function LireParametres() As TParametres
     Dim ws As Worksheet
     Dim i As Long, j As Long, ligne As Long
     Dim utiliser As String, code As String, nom As String
-    Dim codes() As String, noms() As String
+    Dim codes() As String, noms() As String, isins() As String, marches() As String
+    Dim isin As String, marche As String, texteSource As String
 
     Set ws = FeuilleExistante(FEUILLE_PARAMETRES)
     If ws Is Nothing Then
@@ -74,10 +93,34 @@ Public Function LireParametres() As TParametres
                           "Ne la renommez pas et ne la supprimez pas."
     End If
 
-    ' Dossier des fichiers : par defaut, celui du classeur
+    ' Source des donnees
+    texteSource = UCase$(Trim$(CStr(ws.Range(CELLULE_SOURCE).Value)))
+    If InStr(texteSource, "EURONEXT") > 0 Then
+        p.Source = SOURCE_EURONEXT
+    ElseIf InStr(texteSource, "CSV") > 0 Or InStr(texteSource, "FICHIER") > 0 Then
+        p.Source = SOURCE_CSV
+    Else
+        ErreurUtilisateur "Source des donnees (cellule " & CELLULE_SOURCE & ") : choisissez " & _
+                          "'Euronext' (telechargement automatique) ou 'Fichiers CSV'."
+    End If
+
+    ' Periode etudiee
+    p.DateDebut = LireDate(ws.Range(CELLULE_DATE_DEBUT), "Date de debut")
+    p.DateFin = LireDate(ws.Range(CELLULE_DATE_FIN), "Date de fin")
+    If p.DateFin <= p.DateDebut Then
+        ErreurUtilisateur "La date de fin (cellule " & CELLULE_DATE_FIN & ") doit etre posterieure " & _
+                          "a la date de debut (cellule " & CELLULE_DATE_DEBUT & ")."
+    End If
+    If p.Source = SOURCE_EURONEXT And p.DateDebut < Date - 730 Then
+        ErreurUtilisateur "Euronext ne fournit que les deux dernieres annees de cours : la date de debut " & _
+                          "doit etre posterieure au " & Format$(Date - 730, "dd/mm/yyyy") & "." & vbLf & _
+                          "Pour une periode plus ancienne, choisissez la source 'Fichiers CSV'."
+    End If
+
+    ' Dossier des fichiers CSV : par defaut, celui du classeur
     p.Dossier = Trim$(CStr(ws.Range(CELLULE_DOSSIER).Value))
     If p.Dossier = "" Then
-        If ThisWorkbook.Path = "" Then
+        If ThisWorkbook.Path = "" And p.Source = SOURCE_CSV Then
             ErreurUtilisateur "Enregistrez d'abord le classeur (format .xlsm) dans le dossier " & _
                               "qui contient les fichiers CSV, puis relancez la macro."
         End If
@@ -91,11 +134,15 @@ Public Function LireParametres() As TParametres
     ' Tableau des actions
     ReDim codes(1 To NB_MAX_TITRES)
     ReDim noms(1 To NB_MAX_TITRES)
+    ReDim isins(1 To NB_MAX_TITRES)
+    ReDim marches(1 To NB_MAX_TITRES)
     For i = 0 To NB_MAX_TITRES - 1
         ligne = LIGNE_PREMIER_TITRE + i
         utiliser = UCase$(Trim$(CStr(ws.Cells(ligne, COL_UTILISER).Value)))
         code = Trim$(CStr(ws.Cells(ligne, COL_CODE).Value))
         nom = Trim$(CStr(ws.Cells(ligne, COL_NOM).Value))
+        isin = UCase$(Trim$(CStr(ws.Cells(ligne, COL_ISIN).Value)))
+        marche = UCase$(Trim$(CStr(ws.Cells(ligne, COL_MARCHE).Value)))
         If code <> "" And (utiliser = "OUI" Or utiliser = "O" Or utiliser = "X") Then
             For j = 1 To p.NbTitres
                 If UCase$(codes(j)) = UCase$(code) Then
@@ -107,6 +154,17 @@ Public Function LireParametres() As TParametres
             codes(p.NbTitres) = code
             If nom = "" Then nom = code
             noms(p.NbTitres) = nom
+            If p.Source = SOURCE_EURONEXT Then
+                If Not (isin Like "[A-Z][A-Z]??????????") Or Len(isin) <> 12 Then
+                    ErreurUtilisateur "Code ISIN invalide pour l'action '" & code & "' (cellule " & _
+                                      ws.Cells(ligne, COL_ISIN).Address(False, False) & ") : un ISIN compte " & _
+                                      "12 caracteres, par exemple FR0000121014 pour LVMH." & vbLf & _
+                                      "Vous le trouvez sur la page de l'action sur live.euronext.com."
+                End If
+            End If
+            If marche = "" Then marche = "XPAR"         ' Euronext Paris par defaut
+            isins(p.NbTitres) = isin
+            marches(p.NbTitres) = marche
         End If
     Next i
 
@@ -116,8 +174,12 @@ Public Function LireParametres() As TParametres
     End If
     ReDim Preserve codes(1 To p.NbTitres)
     ReDim Preserve noms(1 To p.NbTitres)
+    ReDim Preserve isins(1 To p.NbTitres)
+    ReDim Preserve marches(1 To p.NbTitres)
     p.Codes = codes
     p.Noms = noms
+    p.Isins = isins
+    p.Marches = marches
 
     ' Les deux titres du tableau "Deux titres" (par defaut : les deux premiers)
     p.IndiceTitreA = IndiceDuTitre(p, CStr(ws.Range(CELLULE_TITRE_A).Value), 1)
@@ -143,6 +205,17 @@ Private Function LireEntier(ByVal cellule As Range, ByVal libelle As String, _
                           ") : saisissez un nombre entier entre " & mini & " et " & maxi & "."
     End If
     LireEntier = CLng(v)
+End Function
+
+'' Lit une date saisie dans une cellule.
+Private Function LireDate(ByVal cellule As Range, ByVal libelle As String) As Date
+    Dim v As Variant
+    v = cellule.Value
+    If IsEmpty(v) Or Not IsDate(v) Then
+        ErreurUtilisateur "Parametre '" & libelle & "' (cellule " & cellule.Address(False, False) & _
+                          ") : saisissez une date, par exemple 01/01/2025."
+    End If
+    LireDate = CDate(v)
 End Function
 
 ' Lit le pas de la grille (ex. 10 %) : il doit diviser 100 %.
